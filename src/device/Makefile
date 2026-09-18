@@ -44,13 +44,30 @@ define COMPILE
  $(call COMPILE$(or $3,$(suffix $2)),$1,$2)
 endef
 
-ifeq ($(shell echo "$$((1000*$(CUDA_MAJOR) + 10*$(CUDA_MINOR) >= 12090))"),1)
-	NVCC_GENCODE_LDMC_FP8 = -gencode=arch=compute_100f,code=sm_100f
-else ifeq ($(shell echo "$$((1000*$(CUDA_MAJOR) + 10*$(CUDA_MINOR) >= 12070))"),1)
-  NVCC_GENCODE_LDMC_FP8 = -gencode=arch=compute_100a,code=sm_100a
-else
-	NVCC_GENCODE_LDMC_FP8 =
-endif
+# zbrad/nccl tuned-builds: compile LDMC/multicast FP8 kernels for the
+# actual caller-requested NVCC_GENCODE instead of a fixed CUDA-version-
+# gated datacenter-Blackwell target (upstream's original logic below,
+# preserved in a comment for reference). Upstream unconditionally
+# compiled these for sm_100f/sm_100a on CUDA >= 12.7 regardless of the
+# real target arch, breaking single-arch tuned builds (e.g. GB10/sm_121a)
+# with a fat multi-arch binary -- caught by gpu_tuned_verify_arch.
+# Confirmed safe: the generated kernel source's own runtime-dispatch
+# guard already lists every arch in generate.py's `specific_sms` (121a
+# included), and compiling for e.g. compute_121a produces a real,
+# correctly-defined symbol, not a compile failure -- verified directly
+# with a minimal single-file nvcc repro before applying this. Filed
+# upstream: https://github.com/NVIDIA/nccl/issues/2420 -- revert this
+# patch (and tuned/build.sh's hook applying it) once that's fixed there.
+#
+# Upstream's original (CUDA-version-only, ignores NVCC_GENCODE):
+#   ifeq ($(shell echo "$$((1000*$(CUDA_MAJOR) + 10*$(CUDA_MINOR) >= 12090))"),1)
+#   	NVCC_GENCODE_LDMC_FP8 = -gencode=arch=compute_100f,code=sm_100f
+#   else ifeq ($(shell echo "$$((1000*$(CUDA_MAJOR) + 10*$(CUDA_MINOR) >= 12070))"),1)
+#     NVCC_GENCODE_LDMC_FP8 = -gencode=arch=compute_100a,code=sm_100a
+#   else
+#   	NVCC_GENCODE_LDMC_FP8 =
+#   endif
+NVCC_GENCODE_LDMC_FP8 = $(NVCC_GENCODE)
 
 define COMPILE_SYM
 @$(SAY) "Compiling" $2;\
