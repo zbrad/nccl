@@ -40,7 +40,22 @@ NCCL_TUNED_VERSION="$(awk '
 }
 unset _nccl_ver_mk
 : "${NCCL_TUNED_COMMIT:=$(git -C "${REPODIR}" rev-parse --short HEAD 2>/dev/null || echo unknown)}"
-export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT
+# Source identity: NVIDIA's release tag, how many commits of ours sit on it, and the hash, e.g.
+# v2.30.7-1-5-g2fe1779f (a bare upstream tag reads v2.30.7-1-0-g<hash>); -dirty when tracked
+# files differ. Only NVIDIA's v<X.Y.Z>-<N> tags count: NCCL also keeps nccl4py-* and nccl-ep-*
+# tags, and our own v0.* release tags must never be picked up.
+NCCL_TUNED_DESCRIBE="$(git -C "${REPODIR}" describe --tags --long --dirty --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' 2>/dev/null)" || {
+    echo "[tuned/env] ERROR: git describe found no NVIDIA release tag (v<X.Y.Z>-<N>) in ${REPODIR}. Fetch upstream's tags: git fetch upstream --tags" >&2
+    return 1 2>/dev/null || exit 1
+}
+NCCL_TUNED_COMMIT_FULL="$(git -C "${REPODIR}" rev-parse HEAD)"
+[[ "${NCCL_TUNED_DESCRIBE}" == *-dirty ]] && NCCL_TUNED_COMMIT_FULL="${NCCL_TUNED_COMMIT_FULL}-dirty"
+# NCCL prints NCCL_SUFFIX in its version line ("NCCL version 2.30.7-tuned+cuda13.4"), so a log
+# from our build is recognisably not NVIDIA's. Passed on make's command line by build.sh, which
+# overrides version.mk without editing that upstream-tracked file. Library file names and the
+# SONAME use only the numbers, and nccl.h's version macros are unchanged.
+NCCL_TUNED_SUFFIX="-tuned"
+export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT NCCL_TUNED_DESCRIBE NCCL_TUNED_COMMIT_FULL NCCL_TUNED_SUFFIX
 
 # --- CUDA toolkit: chosen from tuned/common-data/toolkits. CUDA_TAG (cu133) or CUDA_VER
 #     (13.3) select one; neither set means the highest defined, stated loudly. ---
@@ -57,16 +72,22 @@ fi
 unset _nccl_tk _nccl_req_ver
 gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
 
-# --- Output layout: everything lives under build/<cuda>/ (gitignored: /build*), one tree per
-#     toolkit, no variant level: two variants never share a build tree. Same shape as
-#     pytorch's tuned/build/<cuda>/{cmake,dist,...}. nccl/ is make's BUILDDIR, dist/ the
-#     tarballs. A marker file refuses a tree last used by another variant, so a mix-up is an
-#     error, not a silently wrong archive. ---
-NCCL_TUNED_BUILD_ROOT="${NCCL_TUNED_BUILD_ROOT:-${REPODIR}/build/${TOOLKIT_ID}}"
+# --- Output layout: build/<cuda>/<describe>/ (gitignored: /build*): one tree per toolkit and per
+#     source state, so a build of a newer NCCL, or of one more commit of ours, never overwrites
+#     an older one and each tree says what source made it. No variant level: two variants never
+#     share a build tree. nccl/ is make's BUILDDIR, dist/ the tarballs. A marker file refuses a
+#     tree last used by another variant, so a mix-up is an error, not a silently wrong archive. ---
+NCCL_TUNED_BUILD_ROOT="${NCCL_TUNED_BUILD_ROOT:-${REPODIR}/build/${TOOLKIT_ID}/${NCCL_TUNED_DESCRIBE}}"
 if [[ -f "${NCCL_TUNED_BUILD_ROOT}/.variant" && "$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")" != "${GPU_TUNED_VARIANT}" ]]; then
     echo "[tuned/env] ERROR: ${NCCL_TUNED_BUILD_ROOT} was built for variant '$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")', not '${GPU_TUNED_VARIANT}'. Use a separate checkout or NCCL_TUNED_BUILD_ROOT." >&2
     return 1 2>/dev/null || exit 1
 fi
+# ccache is per toolkit and shared by every source state of it (build/<cuda>/ccache, a sibling of
+# the <describe> trees), so a rebuild of a newer commit reuses the device-code compiles that did
+# not change, and timings and hits never cross toolkits. CCACHE_DIR also makes ccache ignore
+# ~/.config/ccache/ccache.conf, so its small default max size would apply: set it here.
+export CCACHE_DIR="${CCACHE_DIR:-${REPODIR}/build/${TOOLKIT_ID}/ccache}"
+export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 NCCL_TUNED_BUILD_DIR="${NCCL_TUNED_BUILD_ROOT}/nccl"
 NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
 export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_DIST_DIR
@@ -81,6 +102,6 @@ gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null
 embed_build_info() {
     local target="$1"
     gpu_tuned_embed_build_info "${target}" "${GPU_TUNED_VARIANT}" "nccl_tuned" \
-        "${NCCL_TUNED_VERSION} (${NCCL_TUNED_COMMIT}), ${TOOLKIT_ID}" \
+        "${NCCL_TUNED_DESCRIBE}, ${TOOLKIT_ID}" \
         "${GPU_TUNED_HW_LABEL}" "https://github.com/zbrad/nccl"
 }

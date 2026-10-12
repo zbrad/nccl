@@ -1,7 +1,8 @@
 #!/bin/bash
 # tuned/build.sh <variant> — build NCCL for one GPU variant only (single-arch), with the
-# toolkit chosen in tuned/env.sh, into build/<cuda>/nccl/ (gitignored: /build*). One tree per
-# toolkit, no variant level (see env.sh); build/<cuda>/dist/ holds the tarballs.
+# toolkit chosen in tuned/env.sh, into build/<cuda>/<describe>/nccl/ (gitignored: /build*): one
+# tree per toolkit and source state, no variant level (see env.sh); build/<cuda>/<describe>/dist/
+# holds the tarballs.
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10
 #
@@ -29,7 +30,7 @@ if ! grep -q "zbrad/nccl tuned-builds: compile LDMC" "${REPODIR}/src/device/Make
 fi
 
 echo "===================================================="
-echo "NCCL ${NCCL_TUNED_VERSION} (${NCCL_TUNED_COMMIT}) ${GPU_TUNED_HW_LABEL} build"
+echo "NCCL ${NCCL_TUNED_DESCRIBE} ${GPU_TUNED_HW_LABEL} build"
 echo "===================================================="
 echo "  Toolkit   : ${TOOLKIT_ID} (${CUDA_HOME})"
 echo "  Gencode   : ${GENCODE}"
@@ -37,21 +38,95 @@ echo "  Build dir : ${BUILD_DIR}"
 echo "  Jobs      : ${JOBS}"
 echo ""
 
+# NCCL's make does not track the variables passed here (gencode, suffix, git hash, toolkit) as
+# dependencies, so a rebuild with different values silently reuses stale objects and a stale
+# generated nccl.h. Record them, plus a hash of any uncommitted changes, and start from an empty
+# tree when they differ. Deleting only ever happens under this repo's build/ directory.
+PARAMS="gencode=${GENCODE} suffix=${NCCL_TUNED_SUFFIX} commit=${NCCL_TUNED_COMMIT_FULL} toolkit=${TOOLKIT_ID} dirty=$(git -C "${REPODIR}" diff HEAD -- . ':!build' | sha256sum | cut -d' ' -f1)"
+if [[ -f "${BUILD_DIR}/.params" && "$(cat "${BUILD_DIR}/.params")" != "${PARAMS}" ]]; then
+    [[ "${BUILD_DIR}" == "${REPODIR}"/build/*/*/nccl ]] || { echo "ERROR: refusing to clear unexpected build dir ${BUILD_DIR}" >&2; exit 1; }
+    echo "Build parameters changed since the last build here; starting from an empty tree."
+    rm -rf -- "${BUILD_DIR}"
+fi
+# Compiler cache. nvcc is wrapped directly (that is where most of the build time is: the generated
+# device kernels). Host C++ is routed through ccache by tuned/timed-shell.sh, because CXX itself must
+# stay a bare compiler (NCCL passes "-ccbin $(CXX)" to nvcc). nvcc -dw compiles (the symmetric
+# kernels) are not cacheable: ccache does not recognise -dw as a compile. NCCL_TUNED_NO_CCACHE=1
+# builds without any of it.
+NVCC_CMD="${CUDA_HOME}/bin/nvcc"
+if command -v ccache >/dev/null 2>&1 && [[ -z "${NCCL_TUNED_NO_CCACHE:-}" ]]; then
+    NVCC_CMD="ccache ${NVCC_CMD}"
+    mkdir -p "${CCACHE_DIR}"
+    # Host C++ goes through ccache too, via tuned/timed-shell.sh and a `c++` symlink to ccache.
+    NCCL_TUNED_CCACHE_BIN="$(dirname "${CCACHE_DIR}")/ccache-bin"
+    mkdir -p "${NCCL_TUNED_CCACHE_BIN}"
+    ln -sfn "$(command -v ccache)" "${NCCL_TUNED_CCACHE_BIN}/c++"
+    export NCCL_TUNED_CCACHE_BIN
+    ccache -z >/dev/null
+    echo "  ccache    : ${CCACHE_DIR} (max ${CCACHE_MAXSIZE})"
+fi
 mkdir -p "${BUILD_DIR}"
+printf '%s\n' "${PARAMS}" > "${BUILD_DIR}/.params"
 printf '%s\n' "${GPU_TUNED_VARIANT}" > "${NCCL_TUNED_BUILD_ROOT}/.variant"
-make -C "${REPODIR}" -j"${JOBS}" -l"${JOBS}" \
-    CXX="${CXX:-c++}" \
-    CUDA_HOME="${CUDA_HOME}" \
-    NVCC="${CUDA_HOME}/bin/nvcc" \
-    NVCC_GENCODE="${GENCODE}" \
-    BUILDDIR="${BUILD_DIR}" \
+
+MAKE_ARGS=(
+    -C "${REPODIR}"
+    CXX="${CXX:-c++}"
+    CUDA_HOME="${CUDA_HOME}"
+    NVCC="${NVCC_CMD}"
+    NVCC_GENCODE="${GENCODE}"
+    BUILDDIR="${BUILD_DIR}"
+    NCCL_SUFFIX="${NCCL_TUNED_SUFFIX}"
+    NCCL_GIT_BRANCH="$(git -C "${REPODIR}" rev-parse --abbrev-ref HEAD)"
+    NCCL_GIT_COMMIT_HASH="${NCCL_TUNED_COMMIT_FULL}"
     VERBOSE=0 DEBUG=0
+)
+
+# Progress and timing. NCCL's make prints a "Compiling <file>" line when a unit starts and nothing
+# else, so tuned/timed-shell.sh (make's SHELL) times every recipe line that names an output with
+# "-o <path>" (each compile and link) and prints "[done/total t+elapsed] seconds kind name". The
+# total is the number of such lines a `make -n` dry run reports (on a partly built tree, only the
+# remaining ones). Per-unit results stay in
+# build/<cuda>/<describe>/timing.tsv: seconds, kind, name, exit status.
+UNIT_RE='[[:space:]]-o[[:space:]]+[^[:space:];]+'
+TOTAL="$(make -n "${MAKE_ARGS[@]}" 2>/dev/null | grep -cE "${UNIT_RE}" || true)"
+export NCCL_TUNED_BUILD_DIR
+export NCCL_TUNED_TIMING_FILE="${NCCL_TUNED_BUILD_ROOT}/timing.tsv"
+export NCCL_TUNED_TIMING_TOTAL="${TOTAL}"
+export NCCL_TUNED_TIMING_T0="${EPOCHSECONDS}"
+: > "${NCCL_TUNED_TIMING_FILE}"
+echo "  Units     : ${TOTAL} to build (timings: ${NCCL_TUNED_TIMING_FILE})"
+echo ""
+make "${MAKE_ARGS[@]}" -j"${JOBS}" -l"${JOBS}" SHELL="${REPODIR}/tuned/timed-shell.sh"
+
+WALL=$(( EPOCHSECONDS - NCCL_TUNED_TIMING_T0 ))
+echo ""
+awk -F'\t' -v wall="${WALL}" -v total="${TOTAL}" '
+    { n++; cpu += $1; if ($4 != 0) bad++ }
+    END { printf "Timing: %d units timed (of %d expected), wall %ds, summed unit time %.0fs, %d failed\n", n, total, wall, cpu, bad }
+' "${NCCL_TUNED_TIMING_FILE}"
+echo "Slowest units:"
+sort -t$'\t' -k1,1 -rn "${NCCL_TUNED_TIMING_FILE}" | head -10 | awk -F'\t' '{ printf "  %7.1fs  %-10s %s\n", $1, $2, $3 }'
+if [[ "${NVCC_CMD}" == ccache* ]]; then
+    echo "ccache: $(ccache -s | grep -E 'Hits:|Misses:' | head -2 | tr -s ' ' | tr '\n' ' ')"
+fi
 
 SHARED="$(find "${BUILD_DIR}/lib" -maxdepth 1 -name 'libnccl.so.*.*.*' -not -type l | head -1)"
 STATIC="${BUILD_DIR}/lib/libnccl_static.a"
 [[ -f "${SHARED}" && -f "${STATIC}" ]] || { echo "ERROR: build produced no ${BUILD_DIR}/lib/libnccl.so.X.Y.Z and libnccl_static.a" >&2; exit 1; }
 
 echo ""
+if ! grep -q "^#define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\"" "${BUILD_DIR}/include/nccl.h"; then
+    echo "ERROR: ${BUILD_DIR}/include/nccl.h does not define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\"." >&2
+    exit 1
+fi
+# (no pipe into grep -q here: under pipefail grep's early exit makes strings die of SIGPIPE and
+#  the check would fail although the line is present)
+if ! grep -q "NCCL version [0-9.]*${NCCL_TUNED_SUFFIX}+cuda" <(strings -n 12 "${SHARED}"); then
+    echo "ERROR: ${SHARED} does not report 'NCCL version <n>${NCCL_TUNED_SUFFIX}+cuda...' in its version line." >&2
+    exit 1
+fi
+echo "ok:   NCCL reports itself as ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}"
 echo "Verifying single-arch (sm_${GPU_TUNED_CUDA_ARCH})..."
 export PATH="${CUDA_HOME}/bin:${PATH}"
 gpu_tuned_verify_arch "${SHARED}" "${GPU_TUNED_CUDA_ARCH}"
