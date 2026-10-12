@@ -67,7 +67,7 @@ if command -v ccache >/dev/null 2>&1 && [[ -z "${NCCL_TUNED_NO_CCACHE:-}" ]]; th
     ccache -z >/dev/null
     echo "  ccache    : ${CCACHE_DIR} (max ${CCACHE_MAXSIZE})"
 fi
-mkdir -p "${BUILD_DIR}"
+mkdir -p "${BUILD_DIR}" "${NCCL_TUNED_BUILD_ROOT}"
 printf '%s\n' "${PARAMS}" > "${BUILD_DIR}/.params"
 printf '%s\n' "${GPU_TUNED_VARIANT}" > "${NCCL_TUNED_BUILD_ROOT}/.variant"
 
