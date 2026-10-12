@@ -230,9 +230,21 @@ gpu_tuned_load_toolkit() {
             return 1
         fi
         echo "[toolkit] available:${listing}" >&2
-        echo "[toolkit] using ${best} (CUDA ${best_v}): none was specified, so the highest defined toolkit is used." >&2
-        echo "[toolkit] to choose another, set CUDA_TAG (e.g. CUDA_TAG=${best}) or CUDA_VER." >&2
-        tk="${best}"
+        local dflt=""
+        if [[ -f "${data_dir}/toolkits/DEFAULT" ]]; then
+            dflt="$(tr -d '[:space:]' < "${data_dir}/toolkits/DEFAULT")"
+            if [[ ! -f "${data_dir}/toolkits/${dflt}.env" ]]; then
+                echo "ERROR: gpu_tuned_load_toolkit: ${data_dir}/toolkits/DEFAULT names '${dflt}', which has no toolkits/${dflt}.env." >&2
+                return 1
+            fi
+            echo "[toolkit] using ${dflt}: none was specified, so the default named in toolkits/DEFAULT is used (highest defined is ${best})." >&2
+            echo "[toolkit] to choose another, set CUDA_TAG (e.g. CUDA_TAG=${best}) or CUDA_VER." >&2
+            tk="${dflt}"
+        else
+            echo "[toolkit] using ${best} (CUDA ${best_v}): none was specified, so the highest defined toolkit is used." >&2
+            echo "[toolkit] to choose another, set CUDA_TAG (e.g. CUDA_TAG=${best}) or CUDA_VER." >&2
+            tk="${best}"
+        fi
     fi
     local base="${data_dir}/toolkits/${tk}.env"
     local over="${data_dir}/toolkits/${variant}-${tk}.env"
@@ -1247,9 +1259,32 @@ gpu_tuned_date_label() {
     if [[ "${v}" =~ \.cu[0-9]+\.([1-9][0-9]{7}(\.[1-9][0-9]*)?)$ ]]; then
         label="${BASH_REMATCH[1]}"
         gpu_tuned_valid_date "${label:0:8}" || label=""
+    elif [[ "${v}" =~ ^v0\.([1-9][0-9]{7})\.(0|[1-9][0-9]*)-[a-z][a-z0-9]*-cu[0-9]+$ ]]; then
+        # native release tag v0.<date>.<seq>-<variant>-cu<cuda>; seq 0 is the bare date
+        label="${BASH_REMATCH[1]}"
+        local seq="${BASH_REMATCH[2]}"   # saved first: gpu_tuned_valid_date's own regex overwrites BASH_REMATCH
+        gpu_tuned_valid_date "${label}" || label=""
+        [ -z "${label}" ] || [ "${seq}" = 0 ] || label="${label}.${seq}"
     fi
     [ -z "${label}" ] || printf '%s\n' "${label}"
     return 0
+}
+
+# gpu_tuned_native_tag <variant> <cuda-tag> <label> -- the release tag of a native (non-wheel)
+# build: v0.<YYYYMMDD>.<seq>-<variant>-<cuda-tag>, e.g. v0.20261011.0-gb10-cu134. <label> is
+# "<YYYYMMDD>[.<seq>]" from gpu_tuned_allocate_date_label; the sequence is always written here
+# (0 for a bare date), where a wheel label omits it. gpu_tuned_date_label reads the tag back.
+gpu_tuned_native_tag() {
+    local variant="${1:-}" cuda_tag="${2:-}" label="${3:-}" date seq
+    date="${label%%.*}"
+    seq="$(gpu_tuned_label_seq "${label}")"
+    if [[ ! "${variant}" =~ ^[a-z][a-z0-9]*$ ]] || [[ ! "${cuda_tag}" =~ ^cu[0-9]+$ ]] \
+        || ! gpu_tuned_valid_date "${date}" || [[ ! "${seq}" =~ ^(0|[1-9][0-9]*)$ ]] \
+        || [[ "${label}" != "${date}" && ( "${seq}" = 0 || "${label}" != "${date}.${seq}" ) ]]; then
+        echo "ERROR: gpu_tuned_native_tag: need <variant> <cuNNN> <YYYYMMDD[.seq]>, got '${variant}' '${cuda_tag}' '${label}'." >&2
+        return 1
+    fi
+    printf 'v0.%s.%s-%s-%s\n' "${date}" "${seq}" "${variant}" "${cuda_tag}"
 }
 
 # gpu_tuned_nvcc_compact [cuda-home] -- the CUDA release that <cuda-home>/bin/nvcc reports,
