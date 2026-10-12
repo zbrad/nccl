@@ -18,7 +18,8 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/build.sh <variant>}"
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
-BUILD_DIR="${NCCL_TUNED_BUILD_DIR}"
+BUILD_DIR="${NCCL_TUNED_WORK_DIR}"          # where make runs (fixed path, so ccache hits across commits)
+PUBLISH_DIR="${NCCL_TUNED_BUILD_DIR}"       # build/<cuda>/<describe>/nccl: what package.sh reads
 JOBS="${NCCL_TUNED_JOBS:-$(nproc)}"
 GENCODE="-gencode=arch=compute_${GPU_TUNED_CUDA_ARCH},code=sm_${GPU_TUNED_CUDA_ARCH}"
 
@@ -34,7 +35,8 @@ echo "NCCL ${NCCL_TUNED_DESCRIBE} ${GPU_TUNED_HW_LABEL} build"
 echo "===================================================="
 echo "  Toolkit   : ${TOOLKIT_ID} (${CUDA_HOME})"
 echo "  Gencode   : ${GENCODE}"
-echo "  Build dir : ${BUILD_DIR}"
+echo "  Work dir  : ${BUILD_DIR}"
+echo "  Output    : ${PUBLISH_DIR}"
 echo "  Jobs      : ${JOBS}"
 echo ""
 
@@ -44,7 +46,7 @@ echo ""
 # tree when they differ. Deleting only ever happens under this repo's build/ directory.
 PARAMS="gencode=${GENCODE} suffix=${NCCL_TUNED_SUFFIX} commit=${NCCL_TUNED_COMMIT_FULL} toolkit=${TOOLKIT_ID} dirty=$(git -C "${REPODIR}" diff HEAD -- . ':!build' | sha256sum | cut -d' ' -f1)"
 if [[ -f "${BUILD_DIR}/.params" && "$(cat "${BUILD_DIR}/.params")" != "${PARAMS}" ]]; then
-    [[ "${BUILD_DIR}" == "${REPODIR}"/build/*/*/nccl ]] || { echo "ERROR: refusing to clear unexpected build dir ${BUILD_DIR}" >&2; exit 1; }
+    [[ "${BUILD_DIR}" == "${REPODIR}"/build/*/work/nccl ]] || { echo "ERROR: refusing to clear unexpected build dir ${BUILD_DIR}" >&2; exit 1; }
     echo "Build parameters changed since the last build here; starting from an empty tree."
     rm -rf -- "${BUILD_DIR}"
 fi
@@ -90,7 +92,7 @@ MAKE_ARGS=(
 # build/<cuda>/<describe>/timing.tsv: seconds, kind, name, exit status.
 UNIT_RE='[[:space:]]-o[[:space:]]+[^[:space:];]+'
 TOTAL="$(make -n "${MAKE_ARGS[@]}" 2>/dev/null | grep -cE "${UNIT_RE}" || true)"
-export NCCL_TUNED_BUILD_DIR
+export NCCL_TUNED_STRIP_PREFIX="${BUILD_DIR}"
 export NCCL_TUNED_TIMING_FILE="${NCCL_TUNED_BUILD_ROOT}/timing.tsv"
 export NCCL_TUNED_TIMING_TOTAL="${TOTAL}"
 export NCCL_TUNED_TIMING_T0="${EPOCHSECONDS}"
@@ -132,5 +134,11 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 gpu_tuned_verify_arch "${SHARED}" "${GPU_TUNED_CUDA_ARCH}"
 gpu_tuned_verify_arch "${STATIC}" "${GPU_TUNED_CUDA_ARCH}"
 echo ""
-echo "Built: ${BUILD_DIR}/lib ($(basename "${SHARED}"), libnccl_static.a)"
+# Publish the finished library and headers into the <describe> tree.
+[[ "${PUBLISH_DIR}" == "${REPODIR}"/build/*/*/nccl && "${PUBLISH_DIR}" != */work/nccl ]] || { echo "ERROR: unexpected output dir ${PUBLISH_DIR}" >&2; exit 1; }
+mkdir -p "${PUBLISH_DIR}"
+rm -rf -- "${PUBLISH_DIR}/lib" "${PUBLISH_DIR}/include"
+cp -a "${BUILD_DIR}/lib" "${BUILD_DIR}/include" "${PUBLISH_DIR}/"
+printf '%s\n' "${PARAMS}" > "${PUBLISH_DIR}/.params"
+echo "Built: ${PUBLISH_DIR}/lib ($(basename "${SHARED}"), libnccl_static.a)"
 echo "Next: CUDA_TAG=${TOOLKIT_ID} bash tuned/release.sh ${GPU_TUNED_VARIANT}"

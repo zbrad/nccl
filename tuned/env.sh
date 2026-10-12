@@ -88,9 +88,15 @@ fi
 # ~/.config/ccache/ccache.conf, so its small default max size would apply: set it here.
 export CCACHE_DIR="${CCACHE_DIR:-${REPODIR}/build/${TOOLKIT_ID}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
+# The compile itself happens in ONE fixed directory per toolkit, build/<cuda>/work/nccl, and the
+# finished lib/ and include/ are published into the <describe> tree. ccache keys on the paths in
+# the compile command lines (-o, -I, the generated sources), so building in a directory named after
+# the commit would make every new commit a full cache miss; with a fixed work path a new commit
+# reuses every unit it did not change.
+NCCL_TUNED_WORK_DIR="${NCCL_TUNED_WORK_DIR:-${REPODIR}/build/${TOOLKIT_ID}/work/nccl}"
 NCCL_TUNED_BUILD_DIR="${NCCL_TUNED_BUILD_ROOT}/nccl"
 NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
-export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_DIST_DIR
+export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED_DIST_DIR
 
 # --- Repo-specific settings, loaded last; may not change any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1

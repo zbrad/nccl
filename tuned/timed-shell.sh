@@ -14,7 +14,7 @@
 # kind is nvcc, cxx, or link (a -shared library or an executable).
 #
 # Environment (set by build.sh): NCCL_TUNED_TIMING_FILE, NCCL_TUNED_TIMING_TOTAL (units expected;
-# 0 = unknown), NCCL_TUNED_TIMING_T0 (epoch seconds when the build started), NCCL_TUNED_BUILD_DIR
+# 0 = unknown), NCCL_TUNED_TIMING_T0 (epoch seconds when the build started), NCCL_TUNED_STRIP_PREFIX
 # (stripped from the front of output names). Only `-c <recipe>` is supported, which is how GNU
 # make invokes SHELL.
 
@@ -44,7 +44,7 @@ if [[ -z "${NCCL_TUNED_TIMING_FILE:-}" || ! "${recipe}" =~ ${UNIT_RE} ]]; then
     exec /bin/bash -c "${recipe}"
 fi
 name="${BASH_REMATCH[1]}"
-name="${name#"${NCCL_TUNED_BUILD_DIR:-/nonexistent}"/}"
+name="${name#"${NCCL_TUNED_STRIP_PREFIX:-/nonexistent}"/}"
 if [[ "${recipe}" == *nvcc* ]]; then kind=nvcc
 elif [[ "${recipe}" == *" -shared "* ]]; then kind=link
 elif [[ "${recipe}" == *" -c "* ]]; then kind=cxx
