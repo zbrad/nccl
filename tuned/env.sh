@@ -57,6 +57,20 @@ fi
 unset _nccl_tk _nccl_req_ver
 gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
 
+# --- Output layout: everything lives under build/<cuda>/ (gitignored: /build*), one tree per
+#     toolkit, no variant level: two variants never share a build tree. Same shape as
+#     pytorch's tuned/build/<cuda>/{cmake,dist,...}. nccl/ is make's BUILDDIR, dist/ the
+#     tarballs. A marker file refuses a tree last used by another variant, so a mix-up is an
+#     error, not a silently wrong archive. ---
+NCCL_TUNED_BUILD_ROOT="${NCCL_TUNED_BUILD_ROOT:-${REPODIR}/build/${TOOLKIT_ID}}"
+if [[ -f "${NCCL_TUNED_BUILD_ROOT}/.variant" && "$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")" != "${GPU_TUNED_VARIANT}" ]]; then
+    echo "[tuned/env] ERROR: ${NCCL_TUNED_BUILD_ROOT} was built for variant '$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")', not '${GPU_TUNED_VARIANT}'. Use a separate checkout or NCCL_TUNED_BUILD_ROOT." >&2
+    return 1 2>/dev/null || exit 1
+fi
+NCCL_TUNED_BUILD_DIR="${NCCL_TUNED_BUILD_ROOT}/nccl"
+NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
+export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_DIST_DIR
+
 # --- Repo-specific settings, loaded last; may not change any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
 

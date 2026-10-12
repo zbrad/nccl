@@ -1,7 +1,7 @@
 #!/bin/bash
 # tuned/build.sh <variant> — build NCCL for one GPU variant only (single-arch), with the
-# toolkit chosen in tuned/env.sh, into build/<cuda>/<variant>/ (gitignored: /build*), the
-# layout tuned-common's gpu_tuned_cuda_subdir gives every repo (cuda tag first, then variant).
+# toolkit chosen in tuned/env.sh, into build/<cuda>/nccl/ (gitignored: /build*). One tree per
+# toolkit, no variant level (see env.sh); build/<cuda>/dist/ holds the tarballs.
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10
 #
@@ -17,7 +17,7 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/build.sh <variant>}"
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
-BUILD_DIR="${NCCL_TUNED_BUILD_DIR:-$(gpu_tuned_cuda_subdir "${REPODIR}/build" "${TOOLKIT_ID}" "${GPU_TUNED_VARIANT}")}"
+BUILD_DIR="${NCCL_TUNED_BUILD_DIR}"
 JOBS="${NCCL_TUNED_JOBS:-$(nproc)}"
 GENCODE="-gencode=arch=compute_${GPU_TUNED_CUDA_ARCH},code=sm_${GPU_TUNED_CUDA_ARCH}"
 
@@ -38,6 +38,7 @@ echo "  Jobs      : ${JOBS}"
 echo ""
 
 mkdir -p "${BUILD_DIR}"
+printf '%s\n' "${GPU_TUNED_VARIANT}" > "${NCCL_TUNED_BUILD_ROOT}/.variant"
 make -C "${REPODIR}" -j"${JOBS}" -l"${JOBS}" \
     CXX="${CXX:-c++}" \
     CUDA_HOME="${CUDA_HOME}" \
