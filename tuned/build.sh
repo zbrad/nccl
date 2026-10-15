@@ -20,7 +20,7 @@ source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
 BUILD_DIR="${NCCL_TUNED_WORK_DIR}"          # where make runs (fixed path, so ccache hits across commits)
 PUBLISH_DIR="${NCCL_TUNED_BUILD_DIR}"       # build/<cuda>/<describe>/nccl: what package.sh reads
-JOBS="${NCCL_TUNED_JOBS:-$(nproc)}"
+JOBS="${NCCL_TUNED_JOBS:-$(gpu_tuned_jobs)}"
 GENCODE="-gencode=arch=compute_${GPU_TUNED_CUDA_ARCH},code=sm_${GPU_TUNED_CUDA_ARCH}"
 
 # The fix must be present: without it NCCL adds sm_100 device code whatever NVCC_GENCODE says.
