@@ -753,33 +753,55 @@ gpu_tuned_cuda_subdir() {
     fi
 }
 
-# gpu_tuned_out_dir <kind> <repo-root> <cuda-tag> [<variant>] — the
-# CUDA-version-specific output directory for <kind> in the raft/cuvs layout:
-#   build    -> <repo-root>/cpp/build/<cuda-tag>/<variant>
-#   dist     -> <repo-root>/dist/<cuda-tag>/<variant>   (variant may be "shared")
-#   releases -> <repo-root>/tuned/releases/<cuda-tag>   (variant not used)
-# Repos with a different layout (faiss) call gpu_tuned_cuda_subdir directly.
-# Fails on an unknown kind, or a missing variant for build/dist.
+# gpu_tuned_out_dir <kind> <repo-root> <cuda-tag> [<variant>] — an output directory in the
+# per-toolkit tree, tuned/build/<cuda-tag>/ (gitignored via build/), the layout raft and cuvs use
+# (changed 2026-10-12 from cpp/build/<cuda>/<variant> and dist/<cuda>/<variant>):
+#   build    -> <repo-root>/tuned/build/<cuda-tag>/cmake      the one fixed compile path per toolkit
+#   dist     -> <repo-root>/tuned/build/<cuda-tag>/dist       built wheels/tarballs
+#   dist shared -> <repo-root>/tuned/build/<cuda-tag>/dist-shared   a SIBLING of dist, never inside
+#                   it: wheel.sh clears dist before copying the shared wheels in from here
+#   releases -> <repo-root>/tuned/build/<cuda-tag>/releases   generated release inputs (checksums,
+#                   test logs); the tracked RELEASE_NOTES_*.md stay in tuned/releases/
+# There is no variant level: two variants never share a build tree (gpu_tuned_claim_toolkit_tree
+# refuses it). The fixed path is what lets ccache hit and keeps ninja's log for timings. <variant>
+# is accepted for source compatibility and only validated; "shared" selects dist-shared. Repos with
+# a different layout (faiss) call gpu_tuned_cuda_subdir directly. Fails on an unknown kind or a
+# malformed tag or variant.
 gpu_tuned_out_dir() {
-    local kind="$1" root="$2" cuda_tag="$3" variant="${4:-}"
+    local kind="$1" root="$2" cuda_tag="$3" variant="${4:-}" base
+    base="$(gpu_tuned_cuda_subdir "${root}/tuned/build" "${cuda_tag}" "${variant}")" || return 1
+    base="${base%/"${variant}"}"
     case "${kind}" in
-        build|dist)
-            if [[ -z "${variant}" ]]; then
-                echo "ERROR: gpu_tuned_out_dir: '${kind}' needs a variant (got '${variant}')." >&2
-                return 1
-            fi
-            if [[ "${kind}" == "build" ]]; then
-                gpu_tuned_cuda_subdir "${root}/cpp/build" "${cuda_tag}" "${variant}"
-            else
-                gpu_tuned_cuda_subdir "${root}/dist" "${cuda_tag}" "${variant}"
-            fi
+        build) echo "${base}/cmake" ;;
+        dist)
+            if [[ "${variant}" == shared ]]; then echo "${base}/dist-shared"; else echo "${base}/dist"; fi
             ;;
-        releases) gpu_tuned_cuda_subdir "${root}/tuned/releases" "${cuda_tag}" ;;
+        releases) echo "${base}/releases" ;;
         *)
             echo "ERROR: gpu_tuned_out_dir: unknown kind '${kind}' (expected build, dist or releases)." >&2
             return 1
             ;;
     esac
+}
+
+# gpu_tuned_claim_toolkit_tree <repo-root> <cuda-tag> <variant> — create tuned/build/<cuda-tag>/ and
+# record which variant owns it in .variant. With no variant level in the layout, a tree last used
+# by another variant would silently mix their objects; this refuses instead (a separate checkout,
+# or a different machine, is the way to build another variant). Idempotent for the same variant.
+gpu_tuned_claim_toolkit_tree() {
+    local root="$1" cuda_tag="$2" variant="$3" dir owner
+    [[ -n "${variant}" ]] || { echo "ERROR: gpu_tuned_claim_toolkit_tree: a variant is required." >&2; return 1; }
+    dir="$(gpu_tuned_cuda_subdir "${root}/tuned/build" "${cuda_tag}")" || return 1
+    mkdir -p "${dir}"
+    if [[ -f "${dir}/.variant" ]]; then
+        owner="$(cat "${dir}/.variant")"
+        if [[ "${owner}" != "${variant}" ]]; then
+            echo "ERROR: gpu_tuned_claim_toolkit_tree: ${dir} was built for variant '${owner}', not '${variant}'. Use a separate checkout for another variant." >&2
+            return 1
+        fi
+    else
+        printf '%s\n' "${variant}" > "${dir}/.variant"
+    fi
 }
 
 # gpu_tuned_wheel_version <wheel-path> <pkg-name-prefix> — extracts the
@@ -919,8 +941,18 @@ gpu_tuned_smoke_wheel() {
     if [[ -n "${GPU_TUNED_SMOKE_FIND_LINKS:-}" ]]; then
         pip_args+=(--no-index --find-links "${GPU_TUNED_SMOKE_FIND_LINKS}" --find-links "$(dirname "${wheel}")")
     fi
-    echo "smoke: installing ${base} into a clean venv"
-    if ! env -u PYTHONPATH -u PYTHONHOME "${venv}/bin/python" -m pip "${pip_args[@]}" "${wheel}" >"${work}/pip.log" 2>&1; then
+    # GPU_TUNED_SMOKE_PIN="torch==2.15.0+gb10.cu134.20261012" (space-separated requirements) pins
+    # dependencies the wheel only names loosely (torch>=...), and GPU_TUNED_SMOKE_EXTRA_LINKS=<dir>
+    # adds a directory holding those exact wheels while the index stays available for everything
+    # else. Without them a loose torch requirement resolves to stock torch from PyPI and the smoke
+    # test would exercise a pairing nobody ships.
+    local pins=()
+    if [[ -n "${GPU_TUNED_SMOKE_PIN:-}" ]]; then
+        read -r -a pins <<< "${GPU_TUNED_SMOKE_PIN}"
+    fi
+    [[ -z "${GPU_TUNED_SMOKE_EXTRA_LINKS:-}" ]] || pip_args+=(--find-links "${GPU_TUNED_SMOKE_EXTRA_LINKS}")
+    echo "smoke: installing ${base} into a clean venv${pins[*]:+ (pinned: ${pins[*]})}"
+    if ! env -u PYTHONPATH -u PYTHONHOME "${venv}/bin/python" -m pip "${pip_args[@]}" "${wheel}" "${pins[@]}" >"${work}/pip.log" 2>&1; then
         echo "ERROR: ${fn}: pip could not install ${base}:" >&2
         tail -15 "${work}/pip.log" >&2
         rm -rf "${work}"
@@ -969,7 +1001,12 @@ PY
 
     local problems=()
     [[ "${dists}" == "${version}" ]] || problems+=("installed ${dist} versions are '${dists}', expected exactly '${version}'")
-    [[ "${modver}" == "${version}" ]] || problems+=("${imp}.__version__ is '${modver}', expected '${version}'")
+    # A package whose __version__ is a static string (no local label) is checked against the base
+    # version only, with GPU_TUNED_SMOKE_MODULE_VERSION=base; the installed distribution's version
+    # (checked above) still has to match the full label exactly.
+    local want_modver="${version}"
+    [[ "${GPU_TUNED_SMOKE_MODULE_VERSION:-}" == base ]] && want_modver="${version%%+*}"
+    [[ "${modver}" == "${want_modver}" ]] || problems+=("${imp}.__version__ is '${modver}', expected '${want_modver}'")
     [[ "${modfile}" == "${venv}"/* ]] || problems+=("${imp} loaded from '${modfile}', not from inside the clean venv")
     if [[ -n "${section}" && -n "${stamp_lib}" ]]; then
         local lib
@@ -1083,8 +1120,11 @@ gpu_tuned_verify_venv() {
     for egg_dir in "${repo_root}"/*.egg-info; do
         [[ -d "${egg_dir}" ]] || continue
         pkg_name="$(basename "${egg_dir}" .egg-info)"
-        egg_version="$(sed -n 's/^Version: //p' "${egg_dir}/PKG-INFO" 2>/dev/null | head -1)"
-        installed_version="$("${venv_dir}/bin/pip" show "${pkg_name}" 2>/dev/null | sed -n 's/^Version: //p')"
+        # `|| true`: pip show exits 1 for a package not installed yet (a fresh venv), and a missing
+        # PKG-INFO fails sed; both mean "nothing to compare" (empty is handled below), but under
+        # set -e + pipefail the failed assignment would abort the caller instead.
+        egg_version="$(sed -n 's/^Version: //p' "${egg_dir}/PKG-INFO" 2>/dev/null | head -1 || true)"
+        installed_version="$("${venv_dir}/bin/pip" show "${pkg_name}" 2>/dev/null | sed -n 's/^Version: //p' || true)"
         if [[ -n "${egg_version}" && -n "${installed_version}" && "${egg_version}" != "${installed_version}" ]]; then
             echo "ERROR: gpu_tuned_verify_venv: ${egg_dir}/PKG-INFO's Version (${egg_version}) does not match ${venv_dir}'s installed ${pkg_name} (${installed_version}) -- stale metadata, likely left over from a different/deleted venv. Delete it: rm -rf ${egg_dir}" >&2
             return 1
@@ -1098,7 +1138,7 @@ gpu_tuned_verify_venv() {
             echo "ERROR: gpu_tuned_verify_venv: ${cmake_cache}'s CMAKE_HOME_DIRECTORY (${cached_home}) does not match this repo (${repo_root}) -- this build/ dir looks copied from another repo. Delete it: rm -rf ${repo_root}/build" >&2
             return 1
         fi
-    done < <(find "${repo_root}/build" -name 'CMakeCache.txt' 2>/dev/null)
+    done < <(find "${repo_root}/build" -name 'CMakeCache.txt' 2>/dev/null || true)
 
     return 0
 }
@@ -1410,6 +1450,71 @@ gpu_tuned_build_local_version() {
     gpu_tuned_local_version_dated "${variant}" "${cuda}" "${label%%.*}" "$(gpu_tuned_label_seq "${label}")"
 }
 
+# gpu_tuned_jobs -- the default parallel job count for a build: the largest prime not above
+# nproc-2, so the desktop session and other builds keep a couple of cores and a memory-heavy nvcc
+# fan-out is not at the very maximum (20 cores -> 17, 12 -> 7, 8 -> 5, 4 -> 2, 3 or fewer -> 1).
+# The prime is a house preference, not a technical requirement. Callers keep their own override:
+#   JOBS="${MAX_JOBS:-$(gpu_tuned_jobs)}". GPU_TUNED_NPROC replaces nproc (for tests).
+gpu_tuned_jobs() {
+    local n d
+    n=$(( ${GPU_TUNED_NPROC:-$(nproc)} - 2 ))
+    (( n >= 2 )) || { echo 1; return 0; }
+    for (( ; n > 2; n-- )); do
+        for (( d = 2; d * d <= n; d++ )); do
+            (( n % d == 0 )) && continue 2
+        done
+        break
+    done
+    echo "${n}"
+}
+
+# gpu_tuned_ninja_timing <ninja-log> <offset-bytes> <out-tsv> [<strip-prefix>] -- per-target build
+# timings from ninja's own log, for builds that run CMake+Ninja (pytorch, vllm, flash-attention...).
+# Take the log's size (wc -c) BEFORE the build and pass it as <offset-bytes>: ninja appends to the
+# log across runs, so only the lines after the offset belong to this build. Writes one line per
+# target built in this run to <out-tsv>, in the same shape tuned/build.sh in zbrad/nccl writes:
+#   <seconds>\t<kind>\t<target>\t0       kind = nvcc (.cu.o), cxx (.cc/.cpp/.c .o), link (.so/.a), other
+# and prints "Timing: <n> units, wall <s>s, summed unit time <s>s" plus the 10 slowest. Ninja records
+# a target once per run, so a target rebuilt twice in one run cannot occur; "wall" is the span from
+# the first start to the last end in the log. Fails (and writes nothing) if the log is missing, is
+# shorter than the offset, or holds no new targets (a no-op build): say so, never report zeros.
+gpu_tuned_ninja_timing() {
+    local log="${1:-}" offset="${2:-}" out="${3:-}" strip="${4:-}" size
+    if [[ -z "${log}" || -z "${out}" || ! "${offset}" =~ ^[0-9]+$ ]]; then
+        echo "ERROR: gpu_tuned_ninja_timing: usage: <ninja-log> <offset-bytes> <out-tsv> [<strip-prefix>]" >&2
+        return 1
+    fi
+    [[ -f "${log}" ]] || { echo "ERROR: gpu_tuned_ninja_timing: no ninja log at ${log}" >&2; return 1; }
+    size="$(wc -c < "${log}")"
+    if [[ "${size}" -lt "${offset}" ]]; then
+        echo "ERROR: gpu_tuned_ninja_timing: ${log} is smaller (${size}) than the recorded offset (${offset}); it was replaced during the build." >&2
+        return 1
+    fi
+    tail -c +"$((offset + 1))" "${log}" | awk -F'\t' -v strip="${strip}" '
+        /^#/ || NF < 4 { next }
+        {
+            s = $1 + 0; e = $2 + 0; name = $4
+            if (strip != "" && index(name, strip) == 1) name = substr(name, length(strip) + 1)
+            kind = "other"
+            if (name ~ /\.cu\.o$/) kind = "nvcc"
+            else if (name ~ /\.(cc|cpp|cxx|c)\.o$/) kind = "cxx"
+            else if (name ~ /\.(so|a)(\.[0-9.]+)?$/) kind = "link"
+            printf "%.1f\t%s\t%s\t0\n", (e - s) / 1000, kind, name
+        }' > "${out}.tmp"
+    if [[ ! -s "${out}.tmp" ]]; then
+        rm -f "${out}.tmp"
+        echo "ERROR: gpu_tuned_ninja_timing: no targets were built after offset ${offset} in ${log} (a no-op build, or the wrong log)." >&2
+        return 1
+    fi
+    mv "${out}.tmp" "${out}"
+    tail -c +"$((offset + 1))" "${log}" | awk -F'\t' '
+        /^#/ || NF < 4 { next }
+        { n++; sum += ($2 - $1) / 1000; if (min == "" || $1 < min) min = $1; if ($2 > max) max = $2 }
+        END { printf "Timing: %d units, wall %.0fs, summed unit time %.0fs\n", n, (max - min) / 1000, sum }'
+    echo "Slowest units:"
+    sort -t$'\t' -k1,1 -rn "${out}" | head -10 | awk -F'\t' '{ printf "  %7.1fs  %-6s %s\n", $1, $2, $3 }'
+}
+
 # ---- unique shared-object identities -------------------------------------------------
 #
 # Why: the dynamic linker matches a needed library by its SONAME. A tuned package that ships
@@ -1495,6 +1600,217 @@ gpu_tuned_rename_sonames() {
             fi
         done < <(patchelf --print-needed "${f}" 2>/dev/null)
     done
+}
+
+# gpu_tuned_so_names_cmake <out-file> -- write the CMake include that gives the shared libraries of
+# a build unique "-tuned" identities AT BUILD TIME (OUTPUT_NAME <name>-tuned, so the file name, the
+# SONAME, every DT_NEEDED and the generated CMake export files all carry it), without editing any
+# upstream source. Pass it to CMake as
+#   -DCMAKE_PROJECT_TOP_LEVEL_INCLUDES=<out-file> "-DTUNED_SO_TARGETS=<target;target...>"
+# TUNED_SO_TARGETS names the CMake targets to mark (targets that are absent, imported or not shared
+# libraries are skipped; one already ending in -tuned is left alone). The marking runs deferred at
+# the end of the top-level directory, after fetched dependencies exist and before generation. The
+# mark is GPU_TUNED_SO_MARK. Writes the same bytes every time.
+gpu_tuned_so_names_cmake() {
+    local out="${1:-}"
+    [ -n "${out}" ] || { echo "ERROR: gpu_tuned_so_names_cmake: need an output file." >&2; return 1; }
+    cat > "${out}" <<CMAKE
+# Generated by gpu_tuned_so_names_cmake (tuned-common). Do not edit.
+function(tuned_mark_shared_libraries)
+  foreach(tgt IN LISTS TUNED_SO_TARGETS)
+    if(NOT TARGET \${tgt})
+      continue()
+    endif()
+    get_target_property(_type \${tgt} TYPE)
+    get_target_property(_imported \${tgt} IMPORTED)
+    if(_imported OR NOT _type STREQUAL "SHARED_LIBRARY")
+      continue()
+    endif()
+    get_target_property(_out \${tgt} OUTPUT_NAME)
+    if(NOT _out)
+      set(_out \${tgt})
+    endif()
+    if(NOT _out MATCHES "${GPU_TUNED_SO_MARK}\$")
+      set_target_properties(\${tgt} PROPERTIES OUTPUT_NAME "\${_out}${GPU_TUNED_SO_MARK}")
+    endif()
+    message(STATUS "tuned: \${tgt} -> lib\${_out}${GPU_TUNED_SO_MARK}.so")
+  endforeach()
+endfunction()
+cmake_language(DEFER DIRECTORY "\${CMAKE_SOURCE_DIR}" CALL tuned_mark_shared_libraries)
+CMAKE
+}
+
+# gpu_tuned_cmake_ignore_pip_prefixes -- print (no newline) the semicolon list of user-site pip prefixes
+# a build must not search: ~/.local/lib/python*/site-packages itself and every package directory
+# under it that ships CMake config (lib*/cmake or share/cmake). Pass it as
+#   -DCMAKE_IGNORE_PREFIX_PATH=<list>
+# Why: pip wheels such as librmm install complete CMake packages (nvtx3, rmm, rapids_logger ...), and
+# CMake finds them through the site-packages directories. A dependency found there is not fetched, so
+# it is not installed with our package either: the tarball's rmm-dependencies.cmake then asks for
+# nvtx3 that the package does not contain, and the build also silently depends on whatever stock
+# wheel happens to be installed. Prints nothing when there is no user site-packages.
+gpu_tuned_cmake_ignore_pip_prefixes() {
+    local sp d out=() IFS
+    for sp in "${HOME}"/.local/lib/python*/site-packages; do
+        [ -d "${sp}" ] || continue
+        out+=("${sp}")
+        for d in "${sp}"/*/; do
+            d="${d%/}"
+            compgen -G "${d}/lib*/cmake" >/dev/null || compgen -G "${d}/share/cmake" >/dev/null || continue
+            out+=("${d}")
+        done
+    done
+    IFS=';'
+    printf '%s' "${out[*]}"
+}
+
+# gpu_tuned_warn_pip_cmake_packages -- warn loudly (stderr) when user-site pip wheels ship CMake
+# packages (the ones gpu_tuned_cmake_ignore_pip_prefixes tells CMake to ignore), naming each wheel and
+# printing the pip command that removes them. The build is safe either way (they are ignored); the
+# warning is that a stock wheel is installed that could shadow our libraries at run time and that
+# nothing built here is tested against. Only wheels whose names clash with what this fleet ships are
+# named (GPU_TUNED_CONFLICT_WHEEL_RE, default librmm, rapids_logger, libkvikio, libraft, libcuvs);
+# unrelated CMake-shipping wheels such as torch are never suggested for removal. Always returns 0; prints nothing when there are none.
+gpu_tuned_warn_pip_cmake_packages() {
+    local ign sp d di base names=() pkg
+    ign="$(gpu_tuned_cmake_ignore_pip_prefixes)"
+    [ -n "${ign}" ] || return 0
+    while IFS= read -r d; do
+        [ -n "${d}" ] || continue
+        case "${d}" in */site-packages) continue ;; esac
+        sp="${d%/*}"; pkg="${d##*/}"
+        for di in "${sp}"/*.dist-info; do
+            [ -f "${di}/RECORD" ] || continue
+            if grep -q "^${pkg}/" "${di}/RECORD" 2>/dev/null; then
+                base="${di##*/}"; base="${base%%-*}"
+                [[ "${base}" =~ ${GPU_TUNED_CONFLICT_WHEEL_RE:-^(librmm|rapids_logger|libkvikio|libraft|libcuvs)} ]] && names+=("${base}")
+                break
+            fi
+        done
+    done < <(printf '%s\n' "${ign}" | tr ';' '\n')
+    [ "${#names[@]}" -gt 0 ] || return 0
+    {
+        echo ""
+        echo "################################################################################"
+        echo "WARNING: stock pip wheels that ship CMake packages are installed in your user site-packages:"
+        printf '    %s\n' "${names[@]}"
+        echo "This build IGNORES them (CMAKE_IGNORE_PREFIX_PATH), so it is not affected. But they carry the"
+        echo "stock librmm/nvtx3/... names this fleet replaces, and could be loaded in place of ours at run time."
+        case " ${names[*]} " in *" librmm"*) echo "nvtx3: librmm bundles its own nvtx3. That is NOT the tuned copy: the fleet fetches nvtx3 at the pinned"; echo "rapids-cmake, tests against it and ships it. The wheel's copy is unpinned and untested here (an equal version number"; echo "does not show the contents match), so a build that used it would not be the build that was tested." ;; esac
+        echo "Remove them with:"
+        echo "    python3 -m pip uninstall -y ${names[*]}"
+        echo "(anything that depends on them, e.g. rmm-cu13 or pylibraft, must go too; pip lists dependents)"
+        echo "################################################################################"
+        echo ""
+    } >&2
+    return 0
+}
+
+# gpu_tuned__nvtx3_from_pip <cache> <ignore-list> -- true if the cache's nvtx3_DIR is under an ignored pip prefix.
+gpu_tuned__nvtx3_from_pip() {
+    local v p
+    v="$(grep -E '^nvtx3_DIR:[A-Z]+=' "${1}" | head -1)"; v="${v#*=}"
+    while IFS= read -r p; do
+        [ -n "${p}" ] || continue
+        case "${v}" in "${p}"|"${p}"/*) return 0 ;; esac
+    done < <(printf '%s\n' "${2}" | tr ';' '\n')
+    return 1
+}
+
+# gpu_tuned_verify_no_pip_cmake_deps <CMakeCache.txt> -- fail (rc 1, names each entry) if any *_DIR or
+# *_ROOT entry of a build's CMake cache points into a user-site pip prefix (see
+# gpu_tuned_cmake_ignore_pip_prefixes). The ignore list should make that impossible, so this is the
+# check that it did: a dependency (nvtx3, rmm ...) resolved from a stock wheel is not fetched, so it is
+# missing from the package built from this tree. Run it after configure; a stale cache from before the
+# ignore list is caught too (the entry must be unset with -U<var>).
+gpu_tuned_verify_no_pip_cmake_deps() {
+    local cache="${1:-}" ign p line bad=0
+    [ -f "${cache}" ] || { echo "ERROR: gpu_tuned_verify_no_pip_cmake_deps: no such cache file: ${cache}" >&2; return 1; }
+    ign="$(gpu_tuned_cmake_ignore_pip_prefixes)"
+    [ -n "${ign}" ] || return 0
+    while IFS= read -r line; do
+        while IFS= read -r p; do
+            [ -n "${p}" ] || continue
+            case "${line#*=}" in "${p}"|"${p}"/*) echo "ERROR: CMake resolved ${line%%:*} from a pip wheel: ${line#*=}" >&2; bad=1; break ;; esac
+        done < <(printf '%s\n' "${ign}" | tr ';' '\n')
+    done < <(grep -E '^[A-Za-z0-9_]+_(DIR|ROOT):[A-Z]+=' "${cache}" | grep -vE '^CMAKE_')
+    if grep -qE '^nvtx3_DIR:[A-Z]+=' "${cache}" && [ "${bad}" -ne 0 ] && gpu_tuned__nvtx3_from_pip "${cache}" "${ign}"; then
+        echo "  nvtx3: this is NOT the tuned copy. The fleet fetches nvtx3 at the pinned rapids-cmake, builds and tests against" >&2
+        echo "  that copy and ships it in the package. The wheel's copy is unpinned, untested here and unaligned with the rest of" >&2
+        echo "  the tree; an equal version number (both 3.2.0 when this was written) does not show the contents match." >&2
+    fi
+    [ "${bad}" -eq 0 ] || echo "  Remove the wheel (see gpu_tuned_warn_pip_cmake_packages) and reconfigure with -U<var> for each entry above." >&2
+    return "${bad}"
+}
+
+# gpu_tuned_verify_consumer_configure <package-dir> <cmake-package>... -- prove the package is usable by a
+# consumer: configure a minimal CMake project that does find_package(<name> REQUIRED CONFIG) for each
+# name against ONLY <package-dir> (CMAKE_PREFIX_PATH), with the user-site pip prefixes ignored, then
+# require that nvtx3_DIR, rmm_DIR and rapids_logger_DIR (those the consumer resolved) point inside
+# <package-dir> and that nvtx3_DIR is set. This is the failure a consumer such as zbrad/faiss hits when
+# a package leaves a dependency out: its CMake files ask for it and nothing in the package answers.
+# Needs cmake; the CUDA toolkit must be findable (find_dependency(CUDAToolkit)). rc 1 and the CMake
+# output on failure.
+gpu_tuned_verify_consumer_configure() {
+    local pkg="${1:-}" tmp rc=0 var val
+    shift || true
+    [ -d "${pkg}" ] && [ "$#" -gt 0 ] || { echo "ERROR: gpu_tuned_verify_consumer_configure: need <package-dir> and at least one package name." >&2; return 1; }
+    pkg="$(cd "${pkg}" && pwd -P)"
+    tmp="$(mktemp -d)" || return 1
+    {
+        printf 'cmake_minimum_required(VERSION 3.26)\nproject(tuned_consumer CXX)\n'
+        for var in "$@"; do printf 'find_package(%s REQUIRED CONFIG)\n' "${var}"; done
+    } > "${tmp}/CMakeLists.txt"
+    if ! cmake -S "${tmp}" -B "${tmp}/b" "-DCMAKE_PREFIX_PATH=${pkg}" "-DCMAKE_IGNORE_PREFIX_PATH=$(gpu_tuned_cmake_ignore_pip_prefixes)" > "${tmp}/log" 2>&1; then
+        echo "ERROR: a consumer cannot configure against ${pkg} (find_package $*):" >&2
+        sed 's/^/  /' "${tmp}/log" >&2
+        rm -rf "${tmp}"; return 1
+    fi
+    for var in nvtx3_DIR rmm_DIR rapids_logger_DIR; do
+        val="$(grep -E "^${var}:[A-Z]+=" "${tmp}/b/CMakeCache.txt" | head -1)"; val="${val#*=}"
+        if [ -z "${val}" ] || [[ "${val}" == *-NOTFOUND ]]; then
+            [ "${var}" = nvtx3_DIR ] && { echo "ERROR: the consumer never resolved nvtx3 from ${pkg}; the package does not ship it." >&2; rc=1; }
+            continue
+        fi
+        case "${val}" in "${pkg}"/*) ;; *) echo "ERROR: the consumer resolved ${var} outside the package: ${val}" >&2; rc=1 ;; esac
+    done
+    rm -rf "${tmp}"
+    return "${rc}"
+}
+
+# gpu_tuned_rename_package <stage-dir> <ours-manifest> <system-manifest|-> <keep-regex> <assume-present-regex> [<ref-dir>...]
+# -- the whole package-time rename in one call: gpu_tuned_rename_sonames, then every file under
+# each <ref-dir> (CMake import files, pkg-config; typically <stage>/lib/cmake and <stage>/lib/pkgconfig,
+# directories that do not exist are skipped) is rewritten so that each renamed manifest name is
+# replaced by its tuned name, then it fails if any ref file still names a stock (renamed) name, then
+# gpu_tuned_verify_unique_sonames. Idempotent. Prints "old -> new" per rename, indented. The caller
+# keeps what is specific to it: building the manifests, and re-checking its build-info stamp
+# afterwards (patchelf rewrote the files). A manifest name matching <keep-regex> is left alone.
+# Limit: only file names are rewritten (libfoo.so, -l:libfoo.so); a bare pkg-config `-lfoo` names no
+# file and is NOT repointed, so a package that ships such a reference needs it fixed by hand.
+gpu_tuned_rename_package() {
+    local stage="${1:-}" ours="${2:-}" sysman="${3:--}" keep="${4:-}" assume="${5:-}" name new d f bad=0
+    shift $(( $# < 5 ? $# : 5 ))
+    gpu_tuned_rename_sonames "${stage}" "${ours}" "${keep}" | sed 's/^/  /'
+    [ "${PIPESTATUS[0]}" -eq 0 ] || return 1
+    while IFS= read -r name; do
+        [ -n "${name}" ] || continue
+        if [ -n "${keep}" ] && [[ "${name}" =~ ${keep} ]]; then continue; fi
+        new="$(gpu_tuned_tuned_so_name "${name}")" || return 1
+        [ "${name}" != "${new}" ] || continue
+        for d in "$@"; do
+            [ -d "${d}" ] || continue
+            # the old name as a whole word: not preceded or followed by a name character
+            grep -rlE "(^|[^A-Za-z0-9_-])${name//./\\.}([^A-Za-z0-9._-]|\$)" "${d}" 2>/dev/null | while IFS= read -r f; do
+                sed -i -E "s#(^|[^A-Za-z0-9_-])${name//./\\.}([^A-Za-z0-9._-]|\$)#\\1${new}\\2#g" "${f}"
+            done || true
+            if grep -rqE "(^|[^A-Za-z0-9_-])${name//./\\.}([^A-Za-z0-9._-]|\$)" "${d}" 2>/dev/null; then
+                echo "VIOLATION: files under ${d} still name the stock ${name}." >&2; bad=1
+            fi
+        done
+    done < "${ours}"
+    [ "${bad}" -eq 0 ] || return 1
+    gpu_tuned_verify_unique_sonames "${stage}" "${sysman}" "${keep}" "${assume}"
 }
 
 # gpu_tuned_verify_unique_sonames <stage-dir> <system-manifest|-> [keep-regex] [assume-present-regex]
