@@ -731,9 +731,11 @@ fail:
 }
 
 // Pre-process the string so that running "strings" on the lib can quickly reveal the version.
+// zbrad/nccl tuned-builds: version line -- the tuned NCCL_SUFFIX already names the variant, the toolkit and the release label
+// (for example -gb10-cu134.20261018.0), so upstream's "+cuda<major>.<minor>" tail only repeats the toolkit in another spelling;
+// dropped. Upstream's original is the same macro with the extra line:  "+cuda" STR(CUDA_MAJOR) "." STR(CUDA_MINOR)
 #define VERSION_STRING \
-  "NCCL version " STR(NCCL_MAJOR) "." STR(NCCL_MINOR) "." STR(NCCL_PATCH) NCCL_SUFFIX \
-    "+cuda" STR(CUDA_MAJOR) "." STR(CUDA_MINOR)
+  "NCCL version " STR(NCCL_MAJOR) "." STR(NCCL_MINOR) "." STR(NCCL_PATCH) NCCL_SUFFIX
 extern const char* ncclGetGitVersion(void);
 static void showVersion() {
   if (ncclDebugLevel == NCCL_LOG_VERSION || ncclDebugLevel == NCCL_LOG_WARN) {

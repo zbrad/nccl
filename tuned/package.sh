@@ -7,7 +7,7 @@
 #   tuned/build.sh -> tuned/full_test.sh -> this -> tuned/smoke_test.sh -> (commit the release notes) -> tuned/release.sh
 #
 # Names follow tuned-common's native scheme. The date label is allocated ONCE, by tuned/build.sh (it is compiled into the
-# library's version string, "NCCL version 2.32.3-gb10-cu134.20261018.0+cuda13.4"), recorded in <build root>/release-label,
+# library's version string, "NCCL version 2.32.3-gb10-cu134.20261018.0"), recorded in <build root>/release-label,
 # and read here, never recomputed (docs/ARCHITECTURE.md E4):
 #   tag      v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda>
 #   tarball  nccl-tuned-<nccl version>-<variant>-cu<cuda>-<YYYYMMDD>[.<seq>].tar.gz
@@ -106,14 +106,15 @@ Static archive and headers of NCCL ${NCCL_TUNED_VERSION}, built single-arch (sm_
 PyTorch's USE_SYSTEM_NCCL=1 USE_STATIC_NCCL=1 and for llama.cpp's static NCCL. No shared library is shipped.
 
 ## Version
-The library reports itself as \`NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}+cuda${TOOLKIT_CUDA_VER}\` (also in \`nccl.h\` as \`NCCL_SUFFIX "${NCCL_TUNED_SUFFIX}"\`):
+The library reports itself as \`NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}\` (also in \`nccl.h\` as \`NCCL_SUFFIX "${NCCL_TUNED_SUFFIX}"\`):
 NCCL ${NCCL_TUNED_VERSION}, built for variant \`${GPU_TUNED_VARIANT}\` with toolkit \`${TOOLKIT_ID}\`, release label \`${LABEL%%.*}.$(gpu_tuned_label_seq "${LABEL}")\` (the same label as the tag
-\`${RELEASE_TAG}\`); \`+cuda${TOOLKIT_CUDA_VER}\` is NCCL's own record of the CUDA it was compiled with. The numeric version code and the
-library file names are unchanged.
+\`${RELEASE_TAG}\`). Upstream NCCL appends \`+cuda<major>.<minor>\` to this line; this fork drops it (one line in src/init.cc), because the
+suffix already names the toolkit. The numeric version code and the library file names are unchanged.
 
 ## Source
 - Base: NVIDIA/nccl tag \`${GPU_TUNED_UPSTREAM_REF}\` (the NCCL release NVIDIA ships for CUDA ${TOOLKIT_CUDA_VER}), plus this fork's changes: the
-  single-arch fix in src/device/Makefile (NVIDIA/nccl issue 2420, still open upstream) and the \`tuned/\` build tooling.
+  single-arch fix in src/device/Makefile (NVIDIA/nccl issue 2420, still open upstream), the one-line version-line change in src/init.cc
+  (drops the \`+cuda\` tail) and the \`tuned/\` build tooling.
 - Fork commit: \`$(git -C "${REPODIR}" rev-parse HEAD)\` (\`${NCCL_TUNED_DESCRIBE}\`).
 
 ## Tested

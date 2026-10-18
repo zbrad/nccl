@@ -24,6 +24,10 @@ JOBS="${NCCL_TUNED_JOBS:-$(gpu_tuned_jobs)}"
 GENCODE="-gencode=arch=compute_${GPU_TUNED_CUDA_ARCH},code=sm_${GPU_TUNED_CUDA_ARCH}"
 
 # The fix must be present: without it NCCL adds sm_100 device code whatever NVCC_GENCODE says.
+if ! grep -q "zbrad/nccl tuned-builds: version line" "${REPODIR}/src/init.cc"; then
+    echo "ERROR: src/init.cc does not carry the version-line patch (marker 'zbrad/nccl tuned-builds: version line'). Check the last merge." >&2
+    exit 1
+fi
 if ! grep -q "zbrad/nccl tuned-builds: compile LDMC" "${REPODIR}/src/device/Makefile"; then
     echo "ERROR: src/device/Makefile does not carry the single-arch fix (marker 'zbrad/nccl tuned-builds: compile LDMC')." >&2
     echo "  Without it the build embeds sm_100 code whatever NVCC_GENCODE says. Check the last merge." >&2
@@ -136,8 +140,8 @@ if ! grep -q "^#define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\"" "${BUILD_DIR}/inclu
 fi
 # (no pipe into grep -q here: under pipefail grep's early exit makes strings die of SIGPIPE and
 #  the check would fail although the line is present)
-if ! grep -q "NCCL version [0-9.]*${NCCL_TUNED_SUFFIX}+cuda" <(strings -n 12 "${SHARED}"); then
-    echo "ERROR: ${SHARED} does not report 'NCCL version <n>${NCCL_TUNED_SUFFIX}+cuda...' in its version line." >&2
+if ! grep -qx "NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}" <(strings -n 12 "${SHARED}"); then
+    echo "ERROR: ${SHARED} does not report exactly 'NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}' as its version line (no '+cuda' tail)." >&2
     exit 1
 fi
 echo "ok:   NCCL reports itself as ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}"

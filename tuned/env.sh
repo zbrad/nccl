@@ -83,7 +83,8 @@ NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
 export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED_DIST_DIR
 
 # --- The version NCCL reports: NCCL prints NCCL_SUFFIX in its version line, so the library says what it is:
-#       NCCL version 2.32.3-gb10-cu134.20261018.0+cuda13.4
+#       NCCL version 2.32.3-gb10-cu134.20261018.0
+#     (upstream appends "+cuda<major>.<minor>" to this line; this fork drops it in src/init.cc, the suffix already names the toolkit)
 #     i.e. <NCCL version>-<variant>-<toolkit>.<release label>, the same identity as the tag (v0.20261018.0-gb10-cu134) and
 #     the tarball. The label is allocated ONCE, by tuned/build.sh, because it is compiled into nccl.h and the library
 #     (docs/ARCHITECTURE.md E4), and recorded in <build root>/release-label; every other script reads it here and never
