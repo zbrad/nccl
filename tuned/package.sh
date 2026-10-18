@@ -105,6 +105,12 @@ if [[ ! -f "${NOTES_FILE}" ]]; then
 Static archive and headers of NCCL ${NCCL_TUNED_VERSION}, built single-arch (sm_${GPU_TUNED_CUDA_ARCH}) with CUDA ${TOOLKIT_CUDA_VER}, for
 PyTorch's USE_SYSTEM_NCCL=1 USE_STATIC_NCCL=1 and for llama.cpp's static NCCL. No shared library is shipped.
 
+## Version
+The library reports itself as \`NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}+cuda${TOOLKIT_CUDA_VER}\` (also in \`nccl.h\` as \`NCCL_SUFFIX "${NCCL_TUNED_SUFFIX}"\`):
+NCCL ${NCCL_TUNED_VERSION}, built for variant \`${GPU_TUNED_VARIANT}\` with toolkit \`${TOOLKIT_ID}\`, release label \`${LABEL%%.*}.$(gpu_tuned_label_seq "${LABEL}")\` (the same label as the tag
+\`${RELEASE_TAG}\`); \`+cuda${TOOLKIT_CUDA_VER}\` is NCCL's own record of the CUDA it was compiled with. The numeric version code and the
+library file names are unchanged.
+
 ## Source
 - Base: NVIDIA/nccl tag \`${GPU_TUNED_UPSTREAM_REF}\` (the NCCL release NVIDIA ships for CUDA ${TOOLKIT_CUDA_VER}), plus this fork's changes: the
   single-arch fix in src/device/Makefile (NVIDIA/nccl issue 2420, still open upstream) and the \`tuned/\` build tooling.
