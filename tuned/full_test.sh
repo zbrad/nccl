@@ -26,6 +26,8 @@ SHARED="$(ls "${BUILD_DIR}"/lib/libnccl.so.[0-9]*.[0-9]*.[0-9]* 2>/dev/null | he
     echo "ERROR: ${BUILD_DIR} has no libnccl_static.a, libnccl.so.X.Y.Z and include/nccl.h. Run tuned/build.sh ${GPU_TUNED_VARIANT} first." >&2
     exit 1
 }
+nccl_tuned_assert_build_current || exit 1          # never test a stale build (H6)
+BUILT_COMMIT="$(nccl_tuned_built_commit)"
 mkdir -p "${RELEASES_DIR}"
 WORK="$(mktemp -d)"
 trap 'rm -rf "${WORK}"' EXIT
@@ -47,7 +49,8 @@ check_version_line() {  # <label> <log of a run made with NCCL_DEBUG=VERSION>: t
     echo "NCCL full test suite -- variant=${GPU_TUNED_VARIANT} toolkit=${TOOLKIT_ID} (CUDA ${TOOLKIT_CUDA_VER})"
     echo "started: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "commit:  $(git -C "${REPODIR}" rev-parse HEAD)"
-    echo "source:  ${NCCL_TUNED_DESCRIBE}"
+    echo "built_commit: ${BUILT_COMMIT}"
+    echo "source:  $(nccl_tuned_describe_commit "${BUILT_COMMIT}")"
     echo "build:   ${BUILD_DIR}"
     echo "scope:   single rank only (one GPU); no multi-rank algorithm or transport is exercised"
     echo ""

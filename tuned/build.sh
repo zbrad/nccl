@@ -1,8 +1,7 @@
 #!/bin/bash
 # tuned/build.sh <variant> — build NCCL for one GPU variant only (single-arch), with the
-# toolkit chosen in tuned/env.sh, into build/<cuda>/<describe>/nccl/ (gitignored: /build*): one
-# tree per toolkit and source state, no variant level (see env.sh); build/<cuda>/<describe>/dist/
-# holds the tarballs.
+# toolkit chosen in tuned/env.sh, into build/<cuda>/nccl/ (gitignored: /build*): one tree per
+# toolkit, no variant level and no per-commit level (see env.sh); build/<cuda>/dist/ holds the tarballs.
 #
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10
 #
@@ -19,7 +18,7 @@ GPU_TUNED_ARG_VARIANT="${1:?usage: tuned/build.sh <variant>}"
 source "${REPODIR}/tuned/env.sh" "${GPU_TUNED_ARG_VARIANT}" || exit 1
 
 BUILD_DIR="${NCCL_TUNED_WORK_DIR}"          # where make runs (fixed path, so ccache hits across commits)
-PUBLISH_DIR="${NCCL_TUNED_BUILD_DIR}"       # build/<cuda>/<describe>/nccl: what package.sh reads
+PUBLISH_DIR="${NCCL_TUNED_BUILD_DIR}"       # build/<cuda>/nccl: what package.sh reads
 JOBS="${NCCL_TUNED_JOBS:-$(gpu_tuned_jobs)}"
 GENCODE="-gencode=arch=compute_${GPU_TUNED_CUDA_ARCH},code=sm_${GPU_TUNED_CUDA_ARCH}"
 
@@ -34,17 +33,15 @@ if ! grep -q "zbrad/nccl tuned-builds: compile LDMC" "${REPODIR}/src/device/Make
     exit 1
 fi
 
-# The release label is baked into the library's version string, so it is allocated here, once, and recorded for the
-# other stages (env.sh reads it). A rebuild of the same tree keeps it; NCCL_TUNED_RELABEL=1 allocates a new one (for
-# example when its sequence has since been published). GPU_TUNED_LABEL_SEQ=<n> chooses the sequence offline.
-if [[ -z "${NCCL_TUNED_LABEL}" || -n "${NCCL_TUNED_RELABEL:-}" ]]; then
-    NCCL_TUNED_LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
-    mkdir -p "${NCCL_TUNED_BUILD_ROOT}"
-    printf '%s\n' "${NCCL_TUNED_LABEL}" > "${NCCL_TUNED_LABEL_FILE}"
-    NCCL_TUNED_SUFFIX="-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}.${NCCL_TUNED_LABEL%%.*}.$(gpu_tuned_label_seq "${NCCL_TUNED_LABEL}")"
-    export NCCL_TUNED_LABEL NCCL_TUNED_SUFFIX
-    echo "Release label allocated: ${NCCL_TUNED_LABEL} (version string ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX})"
-fi
+# The release label is baked into the library's version string, so it is allocated here, at every build, and recorded for the
+# other stages (env.sh reads it). It is HEAD's UTC commit date plus the lowest sequence not yet published, so a rebuild of
+# the same commit gets the same label until that sequence is published; GPU_TUNED_LABEL_SEQ=<n> chooses it offline.
+NCCL_TUNED_LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
+mkdir -p "${NCCL_TUNED_BUILD_ROOT}"
+printf '%s\n' "${NCCL_TUNED_LABEL}" > "${NCCL_TUNED_LABEL_FILE}"
+NCCL_TUNED_SUFFIX="-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}.${NCCL_TUNED_LABEL%%.*}.$(gpu_tuned_label_seq "${NCCL_TUNED_LABEL}")"
+export NCCL_TUNED_LABEL NCCL_TUNED_SUFFIX
+echo "Release label: ${NCCL_TUNED_LABEL} (version string ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX})"
 
 echo "===================================================="
 echo "NCCL ${NCCL_TUNED_DESCRIBE} ${GPU_TUNED_HW_LABEL} build"
@@ -105,7 +102,7 @@ MAKE_ARGS=(
 # "-o <path>" (each compile and link) and prints "[done/total t+elapsed] seconds kind name". The
 # total is the number of such lines a `make -n` dry run reports (on a partly built tree, only the
 # remaining ones). Per-unit results stay in
-# build/<cuda>/<describe>/timing.tsv: seconds, kind, name, exit status.
+# build/<cuda>/timing.tsv: seconds, kind, name, exit status.
 UNIT_RE='[[:space:]]-o[[:space:]]+[^[:space:];]+'
 TOTAL="$(make -n "${MAKE_ARGS[@]}" 2>/dev/null | grep -cE "${UNIT_RE}" || true)"
 export NCCL_TUNED_STRIP_PREFIX="${BUILD_DIR}"
@@ -150,8 +147,8 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 gpu_tuned_verify_arch "${SHARED}" "${GPU_TUNED_CUDA_ARCH}"
 gpu_tuned_verify_arch "${STATIC}" "${GPU_TUNED_CUDA_ARCH}"
 echo ""
-# Publish the finished library and headers into the <describe> tree.
-[[ "${PUBLISH_DIR}" == "${REPODIR}"/build/*/*/nccl && "${PUBLISH_DIR}" != */work/nccl ]] || { echo "ERROR: unexpected output dir ${PUBLISH_DIR}" >&2; exit 1; }
+# Publish the finished library and headers into build/<cuda>/nccl.
+[[ "${PUBLISH_DIR}" == "${REPODIR}"/build/*/nccl && "${PUBLISH_DIR}" != */work/nccl ]] || { echo "ERROR: unexpected output dir ${PUBLISH_DIR}" >&2; exit 1; }
 mkdir -p "${PUBLISH_DIR}"
 rm -rf -- "${PUBLISH_DIR}/lib" "${PUBLISH_DIR}/include"
 cp -a "${BUILD_DIR}/lib" "${BUILD_DIR}/include" "${PUBLISH_DIR}/"
