@@ -34,23 +34,20 @@ classifiers = [
 dependencies = [
     "packaging",
     "numpy",
-    "cuda.core~=1.0",
+    "cuda-core~=1.0",
     "cuda-pathfinder>=1.5.4,<2.0.0",
-    # typing_extensions provides @deprecated (PEP 702) below Python 3.13, and
-    # dataclass_transform below 3.11 (for nccl.ep's @binding_dataclass).
-    'typing_extensions; python_version < "3.13"',
 ]
 
 [project.optional-dependencies]
 cu12 = [
     "nvidia-nccl-cu12",
     "cuda-bindings~=12.0",
-    "nvidia-cutlass-dsl>=4.5.2,<5.0",
+    "nvidia-cutlass-dsl~=4.6",
 ]
 cu13 = [
     "nvidia-nccl-cu13",
     "cuda-bindings~=13.0",
-    "nvidia-cutlass-dsl[cu13]>=4.5.2,<5.0",
+    "nvidia-cutlass-dsl[cu13]~=4.6",
 ]
 
 [dependency-groups]
@@ -71,28 +68,39 @@ issues = "https://github.com/NVIDIA/nccl/issues"
 
 [build-system]
 requires = [
-    "setuptools>=77.0.3",
+    "setuptools>=80",
+    "setuptools-scm>=10.2,<11",
     "Cython>=3.1"
 ]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools_scm]
+root = "../.."
+version_scheme = "no-guess-dev"
+local_scheme = "node-and-date"
+
+[tool.setuptools_scm.scm.git]
+pre_parse = "fail_on_shallow"
+
+[tool.setuptools_scm.tag]
+prefix = "nccl4py-v"
+strict = true
 
 [tool.setuptools]
 include-package-data = false
 
 [tool.setuptools.packages.find]
-include = ["nccl*"]
+where = ["."]
+include = ["nccl", "nccl.*"]
+# nccl/ is a PEP 420 namespace so NCCL extension distributions (e.g. NCCL EP)
+# can add their own nccl.<ext> subpackage. Required: nccl/ has no __init__.py,
+# so without it no Python module is packaged at all. Only nccl/ is a namespace;
+# nccl/bindings/ and nccl/core/ stay owned by this distribution.
+namespaces = true
 
 [tool.setuptools.package-data]
-"nccl.bindings" = ["cynccl.pxd", "cynccl_ep.pxd"]
-"nccl.ep" = [
-    "lib/libnccl_ep.so",
-    "include/*.h",
-    "include/*.hpp",
-    "include/device/*.cuh",
-]
-
-[tool.setuptools.dynamic]
-version = { attr = "nccl._version.__version__" }
+"nccl.bindings" = ["cynccl.pxd"]
+"nccl.core" = ["py.typed"]
 
 [tool.ruff]
 line-length = 100
@@ -114,7 +122,7 @@ skip = "*-musllinux_*"
 build-verbosity = 1
 
 [tool.cibuildwheel.linux]
-archs = ["native"]  # Fast local builds; override in CI for multi-arch
+archs = ["native"]  # Each local or CI runner builds its native architecture
 manylinux-x86_64-image = "manylinux_2_28"
 manylinux-aarch64-image = "manylinux_2_28"
 repair-wheel-command = "auditwheel repair --exclude libnccl.so.2 --exclude libcuda.so.1 -w {dest_dir} {wheel}"

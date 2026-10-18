@@ -18,6 +18,7 @@ set(UNOPTIMIZED_BC ${OBJDIR}/libnccl_device.bc.unoptimized)
 set(OPTIMIZED_BC ${OBJDIR}/libnccl_device.bc.optimized)
 set(LLVM_IR_FILE ${OBJDIR}/libnccl_device.ll)
 set(FINAL_BC ${LIBDIR}/libnccl_device.bc)
+set(FINAL_LTO_IR ${LIBDIR}/libnccl_device.ltoir)
 
 set(WRAPPER_HEADER ${INCLUDEDIR}/nccl_device_wrapper.h)
 
@@ -29,7 +30,15 @@ else()
     set(BITCODE_LIB_ARCH sm_90 CACHE STRING "CUDA architecture for LLVM IR")
 endif()
 
+set(LTO_IR_ARCH ${BITCODE_LIB_ARCH} CACHE STRING "CUDA architecture for LTO IR")
+
 set(BITCODE_CXX_STD gnu++17 CACHE STRING "C++ standard for LLVM IR")
+set(LTO_IR_CXX_STD c++17 CACHE STRING "C++ standard for LTO IR")
+
+# Enable all ReduceCopy type and block-size combinations in generated IR.
+set(NCCL_DEVICE_DEFINES
+    -DNCCL_DEVICE_PERMIT_EXPERIMENTAL_CODE=1
+)
 
 # Find required tools
 find_program(CLANG_EXECUTABLE clang REQUIRED)
@@ -58,6 +67,7 @@ set(CLANG_COMPAT_INCLUDES
 )
 
 # Common clang flags used for both preprocessing and IR generation
+# Clang supports extended device lambdas but does not define nvcc's feature macro.
 set(COMMON_CLANG_FLAGS
     -std=${BITCODE_CXX_STD}
     -x cuda
@@ -68,6 +78,8 @@ set(COMMON_CLANG_FLAGS
     ${NCCL_INCLUDES}
     ${CUDA_INCLUDES}
     -D__clang_llvm_bitcode_lib__
+    -D__CUDACC_EXTENDED_LAMBDA__
+    ${NCCL_DEVICE_DEFINES}
     -DCUDA_MAJOR=${CUDA_MAJOR}
     -DCUDA_MINOR=${CUDA_MINOR}
     -D_NV_RSQRT_SPECIFIER=
@@ -94,7 +106,7 @@ add_custom_command(
     OUTPUT ${UNOPTIMIZED_BC}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${OBJDIR}
     COMMAND ${CLANG_EXECUTABLE} ${CLANG_FLAGS} ${LLVM_SRC} -o ${UNOPTIMIZED_BC}
-    DEPENDS ${LLVM_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/nccl_device_wrapper.h
+    DEPENDS ${LLVM_SRC} ${CMAKE_CURRENT_SOURCE_DIR}/nccl_device_wrapper.h ${CMAKE_CURRENT_SOURCE_DIR}/util.h
     COMMENT "Generating unoptimized LLVM bitcode..."
     VERBATIM
 )
@@ -153,6 +165,50 @@ add_custom_command(TARGET llvm_ir POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E echo "  Optimized:         ${OPTIMIZED_BC}"
     COMMAND ${CMAKE_COMMAND} -E echo "  LLVM IR:           ${LLVM_IR_FILE}"
     COMMAND ${CMAKE_COMMAND} -E echo "  Final BC:          ${FINAL_BC}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Wrapper Header:    ${WRAPPER_HEADER}"
+    VERBATIM
+)
+
+# LTO IR generation
+
+# Find nvcc
+find_program(CUDAToolkit_NVCC_EXECUTABLE nvcc HINTS ${CUDAToolkit_BIN_DIR} REQUIRED)
+
+# Generate LTO IR
+add_custom_command(
+    OUTPUT ${FINAL_LTO_IR}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${LIBDIR}
+    COMMAND ${CUDAToolkit_NVCC_EXECUTABLE}
+        -std=${LTO_IR_CXX_STD}
+        -arch=${LTO_IR_ARCH}
+        --extended-lambda
+        -dlto --ltoir
+        -x cu
+        ${NCCL_INCLUDES}
+        ${CUDA_INCLUDES}
+        ${NCCL_DEVICE_DEFINES}
+        -DCUDA_MAJOR=${CUDA_MAJOR}
+        -DCUDA_MINOR=${CUDA_MINOR}
+        -D__NCCL_DEVICE_LTOIR_LIB__
+        -o ${FINAL_LTO_IR}
+        ${LLVM_SRC}
+    DEPENDS ${LLVM_SRC} ${WRAPPER_HEADER} ${CMAKE_CURRENT_SOURCE_DIR}/util.h
+    COMMENT "Generating LTO IR..."
+    VERBATIM
+)
+
+# Custom target for LTO IR generation
+add_custom_target(ltoir
+    DEPENDS ${FINAL_LTO_IR} ${WRAPPER_HEADER}
+    COMMENT "LTO IR generated successfully"
+)
+
+
+add_custom_command(TARGET ltoir POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E echo "LTO IR generated successfully:"
+    COMMAND ${CMAKE_COMMAND} -E echo "  C++ Standard:      ${LTO_IR_CXX_STD}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  GPU Architecture:  ${LTO_IR_ARCH}"
+    COMMAND ${CMAKE_COMMAND} -E echo "  Final LTO IR:      ${FINAL_LTO_IR}"
     COMMAND ${CMAKE_COMMAND} -E echo "  Wrapper Header:    ${WRAPPER_HEADER}"
     VERBATIM
 )

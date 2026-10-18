@@ -60,6 +60,8 @@ struct ncclShmemData {
   int workSize;
   uint64_t workCounter;
   bool profilerEnabled;
+  // ncclFunc_t this batch's completions are counted under.
+  uint8_t func;
   struct ncclShmemGroup groups[NCCL_MAX_GROUPS];
 
   alignas(16) char workStorage[ncclMaxDevWorkBatchBytes()];
@@ -250,6 +252,7 @@ __device__ __forceinline__ void loadWorkBatchToShmem(int tid, int tn, struct ncc
         ncclShmem.workType = (enum ncclDevWorkType)batch.workType;
         ncclShmem.nWorks = workCursor;
         ncclShmem.funcId = batch.funcId;
+        ncclShmem.func = batch.func;
       }
       break;
     }
@@ -278,6 +281,22 @@ struct RunWorkBatch<ncclFuncSendRecv, T, RedOp, NCCL_ALGO_RING, NCCL_PROTO_SIMPL
 
 template <typename T, typename RedOp, int Proto>
 struct RunWorkBatch<ncclFuncAllGatherV, T, RedOp, NCCL_ALGO_RING, Proto>;
+
+#define START 0
+#define STOP 1
+#define FINI 2
+
+// These kernels record only KernelCh start/stop. KernelPhase instrumentation is
+// symmetric-only: the open/close barriers it measures exist in the symmetric
+// kernels, so stamping them here would report boundaries that carry no meaning.
+// Items are strided by workSize, not sizeof(ncclDevWorkColl), which is smaller for
+// registered collectives. Bcast work carries no profiling bit.
+__device__ __forceinline__ bool profilerEnabled(int workItemIdx) {
+  char* work = ncclShmem.workStorage + workItemIdx * ncclShmem.workSize;
+  if (ncclShmem.workType == ncclDevWorkTypeP2p) return ((struct ncclDevWorkP2p*)work)->profilerEnabled;
+  if (ncclShmem.workType == ncclDevWorkTypeBcast) return false;
+  return ((struct ncclDevWorkColl*)work)->profilerEnabled;
+}
 
 // Specialized here for non-P2p (Coll and CollReg)
 template <ncclFunc_t Fn, typename T, typename RedOp, int Algo, int Proto>
@@ -316,14 +335,43 @@ struct RunWorkBatch {
   }
 };
 
-#define START 0
-#define STOP 1
-#define FINI 2
+static_assert(NCCL_NUM_PROGRESS_COUNTERS <= 64, "Progress-counter slots must fit in collOpActive's bitmask");
 
-__device__ __forceinline__ bool profilerEnabled(int workItemIdx) {
-  return (ncclShmem.workType == ncclDevWorkTypeP2p) ?
-           ((struct ncclDevWorkP2p*)ncclShmem.workStorage)[workItemIdx].profilerEnabled :
-           ((struct ncclDevWorkColl*)ncclShmem.workStorage)[workItemIdx].profilerEnabled;
+// Return this batch's progress-counter slot, or -1 for an empty batch.
+// START and STOP see the same batch until loadWorkBatchToShmem runs.
+__device__ __forceinline__ int progressCounterBatchSlot() {
+  if (ncclShmem.nWorks == 0) return -1;
+  return (int)ncclShmem.func;
+}
+
+// Count completed work owned by this channel at STOP/FINI while workStorage is stable.
+__device__ __forceinline__ uint32_t progressCounterScanBatch() {
+  uint32_t count = 0;
+  if (ncclShmem.workType == ncclDevWorkTypeBcast) {
+    // Batched Broadcast completion is owned by channel 0.
+    return ncclShmem.channelId == 0 ? (uint32_t)ncclShmem.nWorks : 0;
+  }
+  if (ncclShmem.workType == ncclDevWorkTypeP2p) {
+    for (int w = 0; w < ncclShmem.nWorks; w++) {
+      struct ncclDevWorkP2p* work = (struct ncclDevWorkP2p*)(ncclShmem.workStorage + w * ncclShmem.workSize);
+      if ((int)ncclShmem.channelId == (int)work->channelBase) count++;
+    }
+  } else {
+    for (int w = 0; w < ncclShmem.nWorks; w++) {
+      struct ncclDevWorkColl* work = (struct ncclDevWorkColl*)(ncclShmem.workStorage + w * ncclShmem.workSize);
+      if ((int)ncclShmem.channelId == (int)work->channelLo) count++;
+    }
+  }
+  return count;
+}
+
+__device__ __forceinline__ void progressCounterPublishCompletedSlot(int slot, uint32_t count) {
+  struct ncclProgressCountersBlock* counters = ncclShmem.comm.progressCounters;
+  if (count == 0 || counters == nullptr) return;
+  counters->completedTimeNs[slot] = globaltimer();
+  // Publish the count after the timestamp. Future consumers that require
+  // stronger snapshot ordering may need a device fence here.
+  asm volatile("red.global.add.u64 [%0], %1;" : : "l"(&counters->completedWorkCount[slot]), "l"((uint64_t)count));
 }
 
 __device__ __forceinline__ void profiler(int action) {
@@ -331,20 +379,36 @@ __device__ __forceinline__ void profiler(int action) {
     int idx = 0;
     uint64_t wc = ncclShmem.channel.workCounter + 1;
     if (action == START) {
+      // timestamp+counter share one 16B slot (single cache line), so publishing
+      // them together needs no fence.
+      // Resolve this batch's progress-counter slot and mark the channel active.
+      if (ncclShmem.comm.progressCounters != nullptr) {
+        int slot = progressCounterBatchSlot();
+        if (slot >= 0) ncclShmem.comm.progressCounters->collOpActive[ncclShmem.channelId] = 1ull << slot;
+      }
       for (; wc <= ncclShmem.channel.workCounter + ncclShmem.nWorks; wc++) {
         if (!profilerEnabled(idx++)) continue;
-        ncclShmem.comm.workStarted[ncclShmem.channelId].data[wc % MAX_PROFILER_EVENTS_PER_CHANNEL].timestamp =
-          globaltimer();
-        ncclShmem.comm.workStarted[ncclShmem.channelId].data[wc % MAX_PROFILER_EVENTS_PER_CHANNEL].counter = wc;
+        uint64_t ts = globaltimer();
+        int slot = wc % MAX_PROFILER_EVENTS_PER_CHANNEL;
+        ncclShmem.comm.workStarted[ncclShmem.channelId].data[slot].timestamp = ts;
+        ncclShmem.comm.workStarted[ncclShmem.channelId].data[slot].counter = wc;
       }
     } else {
       for (; wc <= ncclShmem.channel.workCounter + ncclShmem.nWorks; wc++) {
         if (!profilerEnabled(idx++)) continue;
-        ncclShmem.comm.workCompleted[ncclShmem.channelId].data[wc % MAX_PROFILER_EVENTS_PER_CHANNEL].timestamp =
-          globaltimer();
-        ncclShmem.comm.workCompleted[ncclShmem.channelId].data[wc % MAX_PROFILER_EVENTS_PER_CHANNEL].counter = wc;
+        uint64_t ts = globaltimer();
+        int slot = wc % MAX_PROFILER_EVENTS_PER_CHANNEL;
+        ncclShmem.comm.workCompleted[ncclShmem.channelId].data[slot].timestamp = ts;
+        ncclShmem.comm.workCompleted[ncclShmem.channelId].data[slot].counter = wc;
       }
       ncclShmem.channel.workCounter += ncclShmem.nWorks;
+      // Do not report aborted work as completed; leave its active mask set.
+      if (ncclShmem.aborted == 0 && ncclShmem.comm.progressCounters != nullptr) {
+        int slot = progressCounterBatchSlot();
+        if (slot >= 0) ncclShmem.comm.progressCounters->collOpActive[ncclShmem.channelId] = 0;
+        progressCounterPublishCompletedSlot(slot, progressCounterScanBatch());
+        // No system fence; counter-monitor snapshots are diagnostic and may be stale.
+      }
       if (action == FINI)
         ((ncclKernelCommAndChannels*)ncclShmem.args.comm)->channels[ncclShmem.channelId].workCounter =
           ncclShmem.channel.workCounter;
@@ -426,9 +490,13 @@ __device__ __forceinline__ void ncclKernelMain(struct ncclDevKernelArgs const* a
     int batchIx = ncclShmem.nextBatchIx;
     __syncthreads();
     profiler(STOP);
+    // Keep workStorage stable until thread 0 finishes counting.
+    if (ncclShmem.comm.progressCounters != nullptr) __syncthreads();
     loadWorkBatchToShmem(tid, tn, args, batchIx);
     __syncthreads();
   }
+  // Publish progress-counter completion for the last batch only after every thread has left the work body.
+  if (ncclShmem.comm.progressCounters != nullptr) __syncthreads();
   profiler(FINI);
 }
 

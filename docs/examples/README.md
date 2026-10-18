@@ -99,6 +99,23 @@ kernel launch without CPU involvement. Implementations are provided for
 (GPU-Initiated Networking), and **hybrid GIN/LSA** for optimal multi-node
 communication.
 
+### [RAS (Reliability, Availability, Serviceability)](08_ras/)
+
+RAS is NCCL's built-in health monitoring subsystem. It starts automatically
+when a communicator is created and maintains a cluster-wide view of every
+process, communicator, and GPU in the job. The example here injects a process
+fault and pauses at key moments so you can query the RAS daemon yourself
+(via `nc` or `ncclras`) and watch the full `RUNNING → INCOMPLETE → DEAD`
+progression in real time. Both fault modes are covered: fast detection via
+socket close (`--type exit`) and keep-alive timeout detection via `SIGSTOP`
+(`--type suspend`).
+
+### [GIN Optimizations](09_gin_optimizations/)
+
+This section contains focused examples for understanding and tuning
+GPU-Initiated Networking (GIN) in NCCL Device API applications. It covers
+implementation choices such as producer granularity, context mapping, request
+aggregation, completion, synchronization, and performance measurement.
 
 ## Prerequisites
 
