@@ -35,12 +35,15 @@ HDR_VER="$(awk '$2=="NCCL_MAJOR"{M=$3} $2=="NCCL_MINOR"{N=$3} $2=="NCCL_PATCH"{P
     exit 1
 }
 
-# A package is made only from a build that passed the tests: the log must exist, show a pass, name this exact commit,
-# and be newer than the archive (the build tree is named after the commit, so this is the same source).
+# A package is made only from a build that passed the tests: the build must be clean and from source equal to HEAD outside tuned/ (H6),
+# and the test log must show a pass for exactly that build, newer than the archive.
+nccl_tuned_assert_build_current || exit 1
+BUILT_COMMIT="$(nccl_tuned_built_commit)"
+SOURCE_DESC="$(nccl_tuned_describe_commit "${BUILT_COMMIT}")"
 [[ -f "${TEST_LOG}" ]] || { echo "ERROR: ${TEST_LOG} not found; run tuned/full_test.sh ${GPU_TUNED_VARIANT} for ${TOOLKIT_ID} before packaging." >&2; exit 1; }
 grep -q '^=== Full test suite summary: passed ===$' "${TEST_LOG}" || { echo "ERROR: ${TEST_LOG} does not show a pass." >&2; exit 1; }
-[[ "$(sed -n 's/^commit: *//p' "${TEST_LOG}" | head -1)" == "$(git -C "${REPODIR}" rev-parse HEAD)" ]] || {
-    echo "ERROR: ${TEST_LOG} was run at another commit than HEAD; re-run tuned/full_test.sh." >&2; exit 1; }
+[[ "$(sed -n 's/^built_commit: *//p' "${TEST_LOG}" | head -1)" == "${BUILT_COMMIT}" ]] || {
+    echo "ERROR: ${TEST_LOG} was run on a different build than ${BUILT_COMMIT}; re-run tuned/full_test.sh." >&2; exit 1; }
 [[ ! "${STATIC}" -nt "${TEST_LOG}" ]] || { echo "ERROR: ${STATIC} is newer than the test log; re-run tuned/full_test.sh." >&2; exit 1; }
 
 export PATH="${CUDA_HOME}/bin:${PATH}"
@@ -67,7 +70,7 @@ cp -p "${REPODIR}/LICENSE.txt" "${STAGE}/${NAME}/"
     echo "tag=${RELEASE_TAG}"
     echo "nccl_version=${NCCL_TUNED_VERSION}"
     echo "nccl_version_string=${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}"
-    echo "source=${NCCL_TUNED_DESCRIBE}"
+    echo "source=${SOURCE_DESC}"
     echo "upstream_tag=${GPU_TUNED_UPSTREAM_REF}"
     echo "variant=${GPU_TUNED_VARIANT}"
     echo "arch=sm_${GPU_TUNED_CUDA_ARCH}"
@@ -115,7 +118,7 @@ suffix already names the toolkit. The numeric version code and the library file 
 - Base: NVIDIA/nccl tag \`${GPU_TUNED_UPSTREAM_REF}\` (the NCCL release NVIDIA ships for CUDA ${TOOLKIT_CUDA_VER}), plus this fork's changes: the
   single-arch fix in src/device/Makefile (NVIDIA/nccl issue 2420, still open upstream), the one-line version-line change in src/init.cc
   (drops the \`+cuda\` tail) and the \`tuned/\` build tooling.
-- Fork commit: \`$(git -C "${REPODIR}" rev-parse HEAD)\` (\`${NCCL_TUNED_DESCRIBE}\`).
+- Fork commit: \`${BUILT_COMMIT}\` (\`${SOURCE_DESC}\`).
 
 ## Tested
 tuned/tests/nccl_single_rank.cu on one GB10 GPU: ${STATIC_CHECKS:-?} checks against the static archive and ${SHARED_CHECKS:-?} against the shared build,
@@ -134,16 +137,15 @@ release_tag=${RELEASE_TAG}
 tarball=$(basename "${TARBALL}")
 nccl_version=${NCCL_TUNED_VERSION}
 nccl_version_string=${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}
-source=${NCCL_TUNED_DESCRIBE}
+source=${SOURCE_DESC}
 upstream_tag=${GPU_TUNED_UPSTREAM_REF}
 commit=$(git -C "${REPODIR}" rev-parse HEAD)
+build_commit=${BUILT_COMMIT}
 cuda_tag=${TOOLKIT_ID}
 variant=${GPU_TUNED_VARIANT}
 sha256=$(sha256sum "${TARBALL}" | awk '{print $1}')
 build_root=${NCCL_TUNED_BUILD_ROOT}
 INFO
-# release.sh runs after the notes commit, when HEAD (and so the <describe> tree name) has moved: it finds this package here.
-printf '%s\n' "${NCCL_TUNED_BUILD_ROOT}" > "${REPODIR}/build/${TOOLKIT_ID}/last-package-root.txt"
 
 echo ""
 echo "Packaged (not published): ${TARBALL} (${RELEASE_TAG})"

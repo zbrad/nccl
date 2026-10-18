@@ -11,7 +11,7 @@ what it cannot. Everything here was measured; the per-unit data is in
 | Machine | `geo-a-node-gb10-1`: aarch64, 20 cores (`nproc`), jobs = 20 |
 | Variant / arch | gb10, `-gencode=arch=compute_121a,code=sm_121a` (single arch) |
 | Toolkit | CUDA 13.4 (`cu134`), ccache 4.9.1 |
-| Source | NVIDIA/nccl `v2.30.7-1` plus this fork's commits (`git describe` in `build/<cuda>/<describe>/`) |
+| Source | NVIDIA/nccl `v2.30.7-1` plus this fork's commits (the build's `.params` in `build/<cuda>/nccl/` records the exact commit) |
 | Measured | 2026-10-11, one run each, nothing else building. Single runs: treat differences under about 10% as noise |
 
 ## Results
@@ -53,8 +53,9 @@ cached, so they set the floor on a warm build.
 - **ccache keys on paths.** The first attempt built inside `build/<cuda>/<describe>/nccl`; a new
   commit changes `<describe>`, so every `-o`, `-I` and generated-source path changed and a new
   commit hit only 14 of 266 (112 s, same as cold). The fix is a fixed work path,
-  `build/<cuda>/work/nccl`, with `lib/` and `include/` copied into the `<describe>` tree after the
-  checks pass.
+  `build/<cuda>/work/nccl`, with `lib/` and `include/` copied into `build/<cuda>/nccl` after the
+  checks pass. (Since 2026-10-18 there is no `<describe>` level at all: the tree is `build/<cuda>/` and the source a build came from is
+  recorded in its `.params`.)
 - **The git hash is stripped from every C++ command line except `git_version.cc`.** NCCL adds
   `-DNCCL_GIT_COMMIT_HASH` and `-DNCCL_GIT_BRANCH` to all of them, and only `git_version.cc` reads
   them. That one file is the single miss on a new commit.
@@ -78,7 +79,7 @@ CUDA_TAG=cu134 bash tuned/build.sh gb10
 CUDA_TAG=cu134 bash tuned/build.sh gb10
 ```
 
-`build/<cuda>/<describe>/timing.tsv` holds one line per unit: seconds, kind, output, exit status.
+`build/<cuda>/timing.tsv` holds one line per unit: seconds, kind, output, exit status.
 `NCCL_TUNED_NO_CCACHE=1` builds without the cache. The summary and the slowest-10 list come from
 `tuned/build.sh`; `tuned/timed-shell.sh` produces the per-unit lines.
 

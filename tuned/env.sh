@@ -56,24 +56,27 @@ export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT NCCL_TUNED_DESCRIBE NCCL_TUNED_COMMI
 #     tuned/common-data/toolkits and verified (docs/ARCHITECTURE.md B4). Exports CUDA_VER, CUDA_TAG, CUDA_HOME. ---
 gpu_tuned_select_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
-# --- Output layout: build/<cuda>/<describe>/ (gitignored: /build*): one tree per toolkit and per
-#     source state, so a build of a newer NCCL, or of one more commit of ours, never overwrites
-#     an older one and each tree says what source made it. No variant level: two variants never
-#     share a build tree. nccl/ is make's BUILDDIR, dist/ the tarballs. A marker file refuses a
-#     tree last used by another variant, so a mix-up is an error, not a silently wrong archive. ---
-NCCL_TUNED_BUILD_ROOT="${NCCL_TUNED_BUILD_ROOT:-${REPODIR}/build/${TOOLKIT_ID}/${NCCL_TUNED_DESCRIBE}}"
+# --- Output layout (docs/ARCHITECTURE.md C2): build/<cuda>/ (gitignored: /build*), one tree per toolkit and no
+#     variant level or per-commit level:
+#       ccache/ ccache-bin/   per toolkit        work/nccl/   where make runs (objects), a fixed path
+#       nccl/                 the published lib/ and include/ of the last build, with .params (the exact source and settings)
+#       dist/                 tarballs and package-info.txt          releases/   test and smoke logs
+#       release-label  timing.tsv  .variant
+#     Variants are never built beside each other in the same storage; a marker file refuses a tree last used by another
+#     variant, so a mix-up is an error, not a silently wrong archive. Which source a build came from is recorded in
+#     nccl/.params and checked by nccl_tuned_assert_build_current below, not implied by a directory name. ---
+NCCL_TUNED_BUILD_ROOT="${NCCL_TUNED_BUILD_ROOT:-${REPODIR}/build/${TOOLKIT_ID}}"
 if [[ -f "${NCCL_TUNED_BUILD_ROOT}/.variant" && "$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")" != "${GPU_TUNED_VARIANT}" ]]; then
     echo "[tuned/env] ERROR: ${NCCL_TUNED_BUILD_ROOT} was built for variant '$(cat "${NCCL_TUNED_BUILD_ROOT}/.variant")', not '${GPU_TUNED_VARIANT}'. Use a separate checkout or NCCL_TUNED_BUILD_ROOT." >&2
     return 1 2>/dev/null || exit 1
 fi
-# ccache is per toolkit and shared by every source state of it (build/<cuda>/ccache, a sibling of
-# the <describe> trees), so a rebuild of a newer commit reuses the device-code compiles that did
-# not change, and timings and hits never cross toolkits. CCACHE_DIR also makes ccache ignore
+# ccache is per toolkit (build/<cuda>/ccache), so a rebuild of a newer commit reuses the device-code
+# compiles that did not change, and timings and hits never cross toolkits. CCACHE_DIR also makes ccache ignore
 # ~/.config/ccache/ccache.conf, so its small default max size would apply: set it here.
 export CCACHE_DIR="${CCACHE_DIR:-${REPODIR}/build/${TOOLKIT_ID}/ccache}"
 export CCACHE_MAXSIZE="${CCACHE_MAXSIZE:-20G}"
 # The compile itself happens in ONE fixed directory per toolkit, build/<cuda>/work/nccl, and the
-# finished lib/ and include/ are published into the <describe> tree. ccache keys on the paths in
+# finished lib/ and include/ are published into build/<cuda>/nccl. ccache keys on the paths in
 # the compile command lines (-o, -I, the generated sources), so building in a directory named after
 # the commit would make every new commit a full cache miss; with a fixed work path a new commit
 # reuses every unit it did not change.
@@ -81,6 +84,22 @@ NCCL_TUNED_WORK_DIR="${NCCL_TUNED_WORK_DIR:-${REPODIR}/build/${TOOLKIT_ID}/work/
 NCCL_TUNED_BUILD_DIR="${NCCL_TUNED_BUILD_ROOT}/nccl"
 NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
 export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED_DIST_DIR
+
+# nccl_tuned_built_commit -- the full commit the published build in build/<cuda>/nccl was made from ("<sha>" or "<sha>-dirty"), read from
+# its .params; empty if there is no build. nccl_tuned_describe_commit <sha> -- NVIDIA's release tag, our commits on it and the hash.
+nccl_tuned_built_commit() { sed -n 's/.* commit=\([0-9a-f]\{40\}\(-dirty\)\{0,1\}\) .*/\1/p' "${NCCL_TUNED_BUILD_DIR}/.params" 2>/dev/null | head -1; }
+nccl_tuned_describe_commit() { git -C "${REPODIR}" describe --tags --long --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' "$1" 2>/dev/null; }
+# nccl_tuned_assert_build_current -- fail unless the published build is clean and was made from source that equals HEAD outside tuned/
+# (docs/ARCHITECTURE.md H6). Replaces the per-commit directory that used to make a stale build impossible to pick up by path.
+nccl_tuned_assert_build_current() {
+    local c changed
+    c="$(nccl_tuned_built_commit)"
+    [[ -n "${c}" ]] || { echo "ERROR: ${NCCL_TUNED_BUILD_DIR}/.params records no build commit: run tuned/build.sh ${GPU_TUNED_VARIANT}." >&2; return 1; }
+    [[ "${c}" != *-dirty ]] || { echo "ERROR: the build in ${NCCL_TUNED_BUILD_DIR} was made from a dirty tree (${c}); commit and rebuild." >&2; return 1; }
+    git -C "${REPODIR}" cat-file -e "${c}^{commit}" 2>/dev/null || { echo "ERROR: the build was made at ${c}, which is not in this checkout." >&2; return 1; }
+    changed="$(git -C "${REPODIR}" diff --name-only "${c}" HEAD -- . ':!tuned' | head -5)"
+    [[ -z "${changed}" ]] || { echo "ERROR: the build was made at ${c:0:9} but source outside tuned/ changed since: $(echo "${changed}" | tr '\n' ' '): rebuild." >&2; return 1; }
+}
 
 # --- The version NCCL reports: NCCL prints NCCL_SUFFIX in its version line, so the library says what it is:
 #       NCCL version 2.32.3-gb10-cu134.20261018.0

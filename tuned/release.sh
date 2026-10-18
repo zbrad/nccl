@@ -26,14 +26,6 @@ for arg in "$@"; do
 done
 [[ -n "${VARIANT}" ]] || { echo "usage: tuned/release.sh <variant> [--publish]" >&2; exit 2; }
 
-# The package's tree is named after the commit it was made at; the notes commit has moved HEAD since, so follow the
-# pointer package.sh left for this toolkit (unless the caller set NCCL_TUNED_BUILD_ROOT).
-_tk="${CUDA_TAG:-}"
-[[ -n "${_tk}" || -z "${CUDA_VER:-}" ]] || _tk="cu${CUDA_VER//./}"
-if [[ -n "${_tk}" && -z "${NCCL_TUNED_BUILD_ROOT:-}" && -f "${REPODIR}/build/${_tk}/last-package-root.txt" ]]; then
-    NCCL_TUNED_BUILD_ROOT="$(cat "${REPODIR}/build/${_tk}/last-package-root.txt")"; export NCCL_TUNED_BUILD_ROOT
-fi
-unset _tk
 # shellcheck source=env.sh
 source "${REPODIR}/tuned/env.sh" "${VARIANT}" || exit 1
 cd "${REPODIR}"
@@ -89,10 +81,10 @@ elif [[ "${BUILT}" -nt "${TEST_LOG}" ]]; then
     fail "${BUILT} is newer than the test log: the results predate the build; re-run tuned/full_test.sh"
 elif ! grep -q '^=== Full test suite summary: passed ===$' "${TEST_LOG}"; then
     fail "${TEST_LOG} does not show a pass"
-elif [[ "$(sed -n 's/^commit: *//p' "${TEST_LOG}" | head -1)" != "${PACKAGED_COMMIT}" ]]; then
-    fail "the test log was run at another commit than the packaged ${PACKAGED_COMMIT}"
+elif [[ "$(sed -n 's/^built_commit: *//p' "${TEST_LOG}" | head -1)" != "$(info build_commit)" ]]; then
+    fail "the test log was run on another build than the packaged one ($(info build_commit))"
 else
-    ok "full test suite passed at the packaged commit, log newer than the built archive"
+    ok "full test suite passed on the packaged build, log newer than the built archive"
 fi
 
 # --- package: checksum, order, smoke test ---
