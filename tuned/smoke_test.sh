@@ -54,6 +54,15 @@ ok() { echo "  ok:   $*"; }
             else
                 fail "BUILD_INFO.json does not name ${RELEASE_TAG} / ${GPU_TUNED_VARIANT} / ${TOOLKIT_ID}"
             fi
+            # the version string: <variant>-<toolkit>.<label> derived from the release tag must be what the packaged header and the
+            # running library both say
+            if [[ "${RELEASE_TAG}" =~ ^v0\.([0-9]{8})\.([0-9]+)-([a-z][a-z0-9]*)-(cu[0-9]+)$ ]]; then
+                WANT_SUFFIX="-${BASH_REMATCH[3]}-${BASH_REMATCH[4]}.${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+                grep -q "^#define NCCL_SUFFIX \"${WANT_SUFFIX}\"" "${ROOT}/include/nccl.h" \
+                    && ok "the packaged nccl.h defines NCCL_SUFFIX \"${WANT_SUFFIX}\" (from the tag)" || fail "the packaged nccl.h does not define NCCL_SUFFIX \"${WANT_SUFFIX}\""
+            else
+                WANT_SUFFIX=""; fail "release tag ${RELEASE_TAG} is not v0.<date>.<seq>-<variant>-<cuda>"
+            fi
             HDR_VER="$(awk '$2=="NCCL_MAJOR"{M=$3} $2=="NCCL_MINOR"{N=$3} $2=="NCCL_PATCH"{P=$3} END{printf "%s.%s.%s", M, N, P}' "${ROOT}/include/nccl.h")"
             [[ "${HDR_VER}" == "$(info nccl_version | sed 's/[^0-9.].*//')" ]] && ok "the packaged header says NCCL ${HDR_VER}" || fail "the packaged header says ${HDR_VER}, package-info says $(info nccl_version)"
             export PATH="${CUDA_HOME}/bin:${PATH}"
@@ -65,8 +74,10 @@ ok() { echo "  ok:   $*"; }
                 -I "${ROOT}/include" -o "${WORK}/t_pkg" "${REPODIR}/tuned/tests/nccl_single_rank.cu" \
                 -L "${ROOT}/lib" -l:libnccl_static.a -lrt -ldl -lpthread 2>"${WORK}/cc.log"; then
                 if ldd "${WORK}/t_pkg" | grep -q libnccl; then fail "the test binary needs a shared libnccl: $(ldd "${WORK}/t_pkg" | grep libnccl)"; else ok "the test binary links the package's archive (no shared libnccl needed)"; fi
-                if (cd "${WORK}" && ./t_pkg) > "${WORK}/run.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run.log"; then
+                if (cd "${WORK}" && NCCL_DEBUG=VERSION ./t_pkg) > "${WORK}/run.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run.log"; then
                     ok "against the package: $(grep '^PASSED' "${WORK}/run.log")"
+                    WANT_LINE="NCCL version $(info nccl_version)${WANT_SUFFIX}+cuda${TOOLKIT_CUDA_VER}"
+                    grep -qF "${WANT_LINE}" "${WORK}/run.log" && ok "the packaged library reports '${WANT_LINE}'" || fail "the packaged library does not report '${WANT_LINE}': $(grep -m1 'NCCL version' "${WORK}/run.log" || echo 'no version line')"
                 else
                     fail "the test against the package: $(tail -3 "${WORK}/run.log" | tr '\n' ' ')"
                 fi

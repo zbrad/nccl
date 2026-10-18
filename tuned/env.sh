@@ -50,12 +50,7 @@ NCCL_TUNED_DESCRIBE="$(git -C "${REPODIR}" describe --tags --long --dirty --matc
 }
 NCCL_TUNED_COMMIT_FULL="$(git -C "${REPODIR}" rev-parse HEAD)"
 [[ "${NCCL_TUNED_DESCRIBE}" == *-dirty ]] && NCCL_TUNED_COMMIT_FULL="${NCCL_TUNED_COMMIT_FULL}-dirty"
-# NCCL prints NCCL_SUFFIX in its version line ("NCCL version 2.30.7-tuned+cuda13.4"), so a log
-# from our build is recognisably not NVIDIA's. Passed on make's command line by build.sh, which
-# overrides version.mk without editing that upstream-tracked file. Library file names and the
-# SONAME use only the numbers, and nccl.h's version macros are unchanged.
-NCCL_TUNED_SUFFIX="-tuned"
-export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT NCCL_TUNED_DESCRIBE NCCL_TUNED_COMMIT_FULL NCCL_TUNED_SUFFIX
+export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT NCCL_TUNED_DESCRIBE NCCL_TUNED_COMMIT_FULL
 
 # --- CUDA toolkit: named by CUDA_TAG (cu133) or CUDA_VER (13.3), never defaulted or guessed; loaded from
 #     tuned/common-data/toolkits and verified (docs/ARCHITECTURE.md B4). Exports CUDA_VER, CUDA_TAG, CUDA_HOME. ---
@@ -86,6 +81,23 @@ NCCL_TUNED_WORK_DIR="${NCCL_TUNED_WORK_DIR:-${REPODIR}/build/${TOOLKIT_ID}/work/
 NCCL_TUNED_BUILD_DIR="${NCCL_TUNED_BUILD_ROOT}/nccl"
 NCCL_TUNED_DIST_DIR="${NCCL_TUNED_BUILD_ROOT}/dist"
 export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED_DIST_DIR
+
+# --- The version NCCL reports: NCCL prints NCCL_SUFFIX in its version line, so the library says what it is:
+#       NCCL version 2.32.3-gb10-cu134.20261018.0+cuda13.4
+#     i.e. <NCCL version>-<variant>-<toolkit>.<release label>, the same identity as the tag (v0.20261018.0-gb10-cu134) and
+#     the tarball. The label is allocated ONCE, by tuned/build.sh, because it is compiled into nccl.h and the library
+#     (docs/ARCHITECTURE.md E4), and recorded in <build root>/release-label; every other script reads it here and never
+#     recomputes it. Before the first build there is no label, and the suffix is only -<variant>-<toolkit>.
+#     Passed on make's command line by build.sh, which overrides version.mk without editing that upstream-tracked file.
+#     Library file names and the SONAME use only the numbers, and nccl.h's version macros are unchanged. ---
+NCCL_TUNED_LABEL_FILE="${NCCL_TUNED_BUILD_ROOT}/release-label"
+NCCL_TUNED_LABEL="$(cat "${NCCL_TUNED_LABEL_FILE}" 2>/dev/null || true)"      # <YYYYMMDD> or <YYYYMMDD>.<seq>, as the allocator prints it
+if [[ -n "${NCCL_TUNED_LABEL}" ]]; then
+    NCCL_TUNED_SUFFIX="-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}.${NCCL_TUNED_LABEL%%.*}.$(gpu_tuned_label_seq "${NCCL_TUNED_LABEL}")"
+else
+    NCCL_TUNED_SUFFIX="-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}"
+fi
+export NCCL_TUNED_LABEL_FILE NCCL_TUNED_LABEL NCCL_TUNED_SUFFIX
 
 # --- Repo-specific settings, loaded last; may not change any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
