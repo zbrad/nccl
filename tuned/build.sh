@@ -30,6 +30,18 @@ if ! grep -q "zbrad/nccl tuned-builds: compile LDMC" "${REPODIR}/src/device/Make
     exit 1
 fi
 
+# The release label is baked into the library's version string, so it is allocated here, once, and recorded for the
+# other stages (env.sh reads it). A rebuild of the same tree keeps it; NCCL_TUNED_RELABEL=1 allocates a new one (for
+# example when its sequence has since been published). GPU_TUNED_LABEL_SEQ=<n> chooses the sequence offline.
+if [[ -z "${NCCL_TUNED_LABEL}" || -n "${NCCL_TUNED_RELABEL:-}" ]]; then
+    NCCL_TUNED_LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
+    mkdir -p "${NCCL_TUNED_BUILD_ROOT}"
+    printf '%s\n' "${NCCL_TUNED_LABEL}" > "${NCCL_TUNED_LABEL_FILE}"
+    NCCL_TUNED_SUFFIX="-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}.${NCCL_TUNED_LABEL%%.*}.$(gpu_tuned_label_seq "${NCCL_TUNED_LABEL}")"
+    export NCCL_TUNED_LABEL NCCL_TUNED_SUFFIX
+    echo "Release label allocated: ${NCCL_TUNED_LABEL} (version string ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX})"
+fi
+
 echo "===================================================="
 echo "NCCL ${NCCL_TUNED_DESCRIBE} ${GPU_TUNED_HW_LABEL} build"
 echo "===================================================="

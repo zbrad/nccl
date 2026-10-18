@@ -36,6 +36,12 @@ SRC="${REPODIR}/tuned/tests/nccl_single_rank.cu"
 FAILURES=0
 fail() { echo "  FAIL: $*" >&2; FAILURES=$((FAILURES + 1)); }
 ok() { echo "  ok:   $*"; }
+# The version line the library prints must name this build's variant, toolkit and release label.
+WANT_VERSION="NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}+cuda${TOOLKIT_CUDA_VER}"
+check_version_line() {  # <label> <log of a run made with NCCL_DEBUG=VERSION>
+    if grep -qF "${WANT_VERSION}" "$2"; then ok "$1 reports '${WANT_VERSION}'"; else fail "$1 does not report '${WANT_VERSION}': $(grep -m1 'NCCL version' "$2" || echo 'no version line')"; fi
+}
+[[ -n "${NCCL_TUNED_LABEL}" ]] || { echo "ERROR: no release label recorded (${NCCL_TUNED_LABEL_FILE}); run tuned/build.sh ${GPU_TUNED_VARIANT}." >&2; exit 1; }
 
 {
     echo "NCCL full test suite -- variant=${GPU_TUNED_VARIANT} toolkit=${TOOLKIT_ID} (CUDA ${TOOLKIT_CUDA_VER})"
@@ -49,7 +55,8 @@ ok() { echo "  ok:   $*"; }
     # --- static ---
     if "${NVCC}" -O1 ${GENCODE} -I "${BUILD_DIR}/include" -o "${WORK}/t_static" "${SRC}" \
         -L "${BUILD_DIR}/lib" -l:libnccl_static.a -lrt -ldl -lpthread 2>"${WORK}/cc_static.log"; then
-        if (cd "${WORK}" && ./t_static) > "${WORK}/run_static.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run_static.log"; then
+        if (cd "${WORK}" && NCCL_DEBUG=VERSION ./t_static) > "${WORK}/run_static.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run_static.log"; then
+            check_version_line "static" "${WORK}/run_static.log"
             ok "static: $(grep '^PASSED' "${WORK}/run_static.log")"
         else
             fail "static run: $(tail -3 "${WORK}/run_static.log" | tr '\n' ' ')"
@@ -68,7 +75,8 @@ ok() { echo "  ok:   $*"; }
         else
             fail "shared binary resolves libnccl to '${RESOLVED}', not the build tree's ${SHARED}"
         fi
-        if (cd "${WORK}" && LD_LIBRARY_PATH="${BUILD_DIR}/lib" ./t_shared) > "${WORK}/run_shared.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run_shared.log"; then
+        if (cd "${WORK}" && NCCL_DEBUG=VERSION LD_LIBRARY_PATH="${BUILD_DIR}/lib" ./t_shared) > "${WORK}/run_shared.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run_shared.log"; then
+            check_version_line "shared" "${WORK}/run_shared.log"
             ok "shared: $(grep '^PASSED' "${WORK}/run_shared.log")"
         else
             fail "shared run: $(tail -3 "${WORK}/run_shared.log" | tr '\n' ' ')"

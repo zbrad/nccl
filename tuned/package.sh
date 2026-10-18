@@ -6,8 +6,9 @@
 # tuned/release.sh does that after its gates (docs/ARCHITECTURE.md B3). Stage order:
 #   tuned/build.sh -> tuned/full_test.sh -> this -> tuned/smoke_test.sh -> (commit the release notes) -> tuned/release.sh
 #
-# Names follow tuned-common's native scheme (date label from HEAD's UTC commit date plus the lowest unused sequence
-# among origin's tags; GPU_TUNED_LABEL_SEQ=0 skips the lookup), allocated ONCE here and recorded in package-info.txt:
+# Names follow tuned-common's native scheme. The date label is allocated ONCE, by tuned/build.sh (it is compiled into the
+# library's version string, "NCCL version 2.32.3-gb10-cu134.20261018.0+cuda13.4"), recorded in <build root>/release-label,
+# and read here, never recomputed (docs/ARCHITECTURE.md E4):
 #   tag      v0.<YYYYMMDD>.<seq>-<variant>-cu<cuda>
 #   tarball  nccl-tuned-<nccl version>-<variant>-cu<cuda>-<YYYYMMDD>[.<seq>].tar.gz
 set -euo pipefail
@@ -46,7 +47,11 @@ export PATH="${CUDA_HOME}/bin:${PATH}"
 gpu_tuned_verify_arch "${STATIC}" "${GPU_TUNED_CUDA_ARCH}" || exit 1
 
 rm -f "${DIST_DIR}/package-info.txt"
-LABEL="$(gpu_tuned_allocate_date_label "${REPODIR}")" || exit 1
+# The label was compiled into this build; the headers about to be packaged must say so.
+[[ -n "${NCCL_TUNED_LABEL}" ]] || { echo "ERROR: ${NCCL_TUNED_LABEL_FILE} is missing: the build predates the label in the version string. Run tuned/build.sh ${GPU_TUNED_VARIANT}." >&2; exit 1; }
+grep -q "^#define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\"" "${BUILD_DIR}/include/nccl.h" || {
+    echo "ERROR: ${BUILD_DIR}/include/nccl.h does not define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\": stale build. Rebuild." >&2; exit 1; }
+LABEL="${NCCL_TUNED_LABEL}"
 RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${TOOLKIT_ID}" "${LABEL}")" || exit 1
 NAME="nccl-tuned-${NCCL_TUNED_VERSION}-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}-${LABEL}"
 
@@ -61,6 +66,7 @@ cp -p "${REPODIR}/LICENSE.txt" "${STAGE}/${NAME}/"
     echo "name=${NAME}"
     echo "tag=${RELEASE_TAG}"
     echo "nccl_version=${NCCL_TUNED_VERSION}"
+    echo "nccl_version_string=${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}"
     echo "source=${NCCL_TUNED_DESCRIBE}"
     echo "upstream_tag=${GPU_TUNED_UPSTREAM_REF}"
     echo "variant=${GPU_TUNED_VARIANT}"
@@ -76,7 +82,7 @@ NVCC_FULL="$("${CUDA_HOME}/bin/nvcc" --version | sed -n 's/.*release [0-9.]*, V\
     package=nccl component=libnccl_static.a "release=${RELEASE_TAG}" "variant=${GPU_TUNED_VARIANT}" \
     "hardware=${GPU_TUNED_HW_LABEL}" "arch=sm_${GPU_TUNED_CUDA_ARCH}" \
     "cuda.tag=${TOOLKIT_ID}" "cuda.version=${TOOLKIT_CUDA_VER}" "cuda.nvcc=${NVCC_FULL:-unknown}" \
-    "nccl.version=${NCCL_TUNED_VERSION}" "upstream.declared_version=${NCCL_TUNED_VERSION}" \
+    "nccl.version=${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}" "upstream.declared_version=${NCCL_TUNED_VERSION}" \
     "deps.static_sha256=$(sha256sum "${STAGE}/${NAME}/lib/libnccl_static.a" | cut -d' ' -f1)" ) || exit 1
 
 TARBALL="${DIST_DIR}/${NAME}.tar.gz"
@@ -120,6 +126,7 @@ cat > "${DIST_DIR}/package-info.txt" <<INFO
 release_tag=${RELEASE_TAG}
 tarball=$(basename "${TARBALL}")
 nccl_version=${NCCL_TUNED_VERSION}
+nccl_version_string=${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}
 source=${NCCL_TUNED_DESCRIBE}
 upstream_tag=${GPU_TUNED_UPSTREAM_REF}
 commit=$(git -C "${REPODIR}" rev-parse HEAD)
