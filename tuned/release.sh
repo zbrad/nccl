@@ -73,6 +73,7 @@ else
     fail "GPU_TUNED_UPSTREAM_REF='${GPU_TUNED_UPSTREAM_REF:-}' is not a ref in this clone"
 fi
 grep -q "zbrad/nccl tuned-builds: compile LDMC" src/device/Makefile && ok "single-arch fix present" || fail "single-arch fix marker missing from src/device/Makefile"
+grep -q "zbrad/nccl tuned-builds: version line" src/init.cc && ok "version-line patch present" || fail "version-line patch marker missing from src/init.cc"
 
 # --- identity ---
 gpu_tuned_check_release_tag "${RELEASE_TAG}" 2>/dev/null && ok "tag carries a date label" || fail "tag ${RELEASE_TAG} carries no date label"

@@ -37,9 +37,9 @@ FAILURES=0
 fail() { echo "  FAIL: $*" >&2; FAILURES=$((FAILURES + 1)); }
 ok() { echo "  ok:   $*"; }
 # The version line the library prints must name this build's variant, toolkit and release label.
-WANT_VERSION="NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}+cuda${TOOLKIT_CUDA_VER}"
-check_version_line() {  # <label> <log of a run made with NCCL_DEBUG=VERSION>
-    if grep -qF "${WANT_VERSION}" "$2"; then ok "$1 reports '${WANT_VERSION}'"; else fail "$1 does not report '${WANT_VERSION}': $(grep -m1 'NCCL version' "$2" || echo 'no version line')"; fi
+WANT_VERSION="NCCL version ${NCCL_TUNED_VERSION}${NCCL_TUNED_SUFFIX}"
+check_version_line() {  # <label> <log of a run made with NCCL_DEBUG=VERSION>: the line must be exactly the expected one
+    if [[ "$(grep -m1 '^NCCL version' "$2" || true)" == "${WANT_VERSION}" ]]; then ok "$1 reports '${WANT_VERSION}'"; else fail "$1 does not report exactly '${WANT_VERSION}': $(grep -m1 'NCCL version' "$2" || echo 'no version line')"; fi
 }
 [[ -n "${NCCL_TUNED_LABEL}" ]] || { echo "ERROR: no release label recorded (${NCCL_TUNED_LABEL_FILE}); run tuned/build.sh ${GPU_TUNED_VARIANT}." >&2; exit 1; }
 

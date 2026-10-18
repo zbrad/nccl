@@ -76,8 +76,8 @@ ok() { echo "  ok:   $*"; }
                 if ldd "${WORK}/t_pkg" | grep -q libnccl; then fail "the test binary needs a shared libnccl: $(ldd "${WORK}/t_pkg" | grep libnccl)"; else ok "the test binary links the package's archive (no shared libnccl needed)"; fi
                 if (cd "${WORK}" && NCCL_DEBUG=VERSION ./t_pkg) > "${WORK}/run.log" 2>&1 && grep -q '^PASSED [0-9]* checks$' "${WORK}/run.log"; then
                     ok "against the package: $(grep '^PASSED' "${WORK}/run.log")"
-                    WANT_LINE="NCCL version $(info nccl_version)${WANT_SUFFIX}+cuda${TOOLKIT_CUDA_VER}"
-                    grep -qF "${WANT_LINE}" "${WORK}/run.log" && ok "the packaged library reports '${WANT_LINE}'" || fail "the packaged library does not report '${WANT_LINE}': $(grep -m1 'NCCL version' "${WORK}/run.log" || echo 'no version line')"
+                    WANT_LINE="NCCL version $(info nccl_version)${WANT_SUFFIX}"
+                    [[ "$(grep -m1 '^NCCL version' "${WORK}/run.log" || true)" == "${WANT_LINE}" ]] && ok "the packaged library reports '${WANT_LINE}'" || fail "the packaged library does not report exactly '${WANT_LINE}': $(grep -m1 'NCCL version' "${WORK}/run.log" || echo 'no version line')"
                 else
                     fail "the test against the package: $(tail -3 "${WORK}/run.log" | tr '\n' ' ')"
                 fi
