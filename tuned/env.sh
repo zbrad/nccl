@@ -7,9 +7,9 @@
 #   CUDA_TAG=cu133 bash tuned/build.sh gb10     (or CUDA_VER=13.3)
 #
 # The toolkit comes from the vendored definitions in tuned/common-data/toolkits/<id>.env
-# (zbrad/tuned-common), never from /usr/local/cuda or whatever happens to be installed.
-# With neither CUDA_TAG nor CUDA_VER set, the highest defined toolkit is used and the
-# available list and the reason are printed. Repo-specific settings live in
+# (zbrad/tuned-common), never from /usr/local/cuda or whatever happens to be installed. There is no
+# default: CUDA_TAG or CUDA_VER must name one; with neither set the loader fails and lists the
+# defined toolkits (at a terminal it asks, for that run only). Repo-specific settings live in
 # tuned/repo.env, loaded last; it may not change any shared key.
 
 GPU_TUNED_ARG_VARIANT="${1:-}"
@@ -57,20 +57,9 @@ NCCL_TUNED_COMMIT_FULL="$(git -C "${REPODIR}" rev-parse HEAD)"
 NCCL_TUNED_SUFFIX="-tuned"
 export NCCL_TUNED_VERSION NCCL_TUNED_COMMIT NCCL_TUNED_DESCRIBE NCCL_TUNED_COMMIT_FULL NCCL_TUNED_SUFFIX
 
-# --- CUDA toolkit: chosen from tuned/common-data/toolkits. CUDA_TAG (cu133) or CUDA_VER
-#     (13.3) select one; neither set means the highest defined, stated loudly. ---
-_nccl_tk="${CUDA_TAG:-}"
-_nccl_req_ver="${CUDA_VER:-}"
-if [ -z "${_nccl_tk}" ] && [ -n "${_nccl_req_ver}" ]; then
-    _nccl_tk="cu${_nccl_req_ver//./}"                           # 13.3 -> cu133
-fi
-gpu_tuned_load_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" "${_nccl_tk}" || return 1 2>/dev/null || exit 1
-if [ -n "${_nccl_req_ver}" ] && [ "${_nccl_req_ver}" != "${TOOLKIT_CUDA_VER}" ]; then
-    echo "[tuned/env] ERROR: CUDA_VER=${_nccl_req_ver} conflicts with toolkit ${TOOLKIT_ID} (CUDA ${TOOLKIT_CUDA_VER})." >&2
-    return 1 2>/dev/null || exit 1
-fi
-unset _nccl_tk _nccl_req_ver
-gpu_tuned_verify_toolkit || return 1 2>/dev/null || exit 1
+# --- CUDA toolkit: named by CUDA_TAG (cu133) or CUDA_VER (13.3), never defaulted or guessed; loaded from
+#     tuned/common-data/toolkits and verified (docs/ARCHITECTURE.md B4). Exports CUDA_VER, CUDA_TAG, CUDA_HOME. ---
+gpu_tuned_select_toolkit "${GPU_TUNED_DATA_DIR}" "${GPU_TUNED_VARIANT}" || return 1 2>/dev/null || exit 1
 
 # --- Output layout: build/<cuda>/<describe>/ (gitignored: /build*): one tree per toolkit and per
 #     source state, so a build of a newer NCCL, or of one more commit of ours, never overwrites
@@ -100,14 +89,3 @@ export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED
 
 # --- Repo-specific settings, loaded last; may not change any shared device/toolkit key. ---
 gpu_tuned_load_repo_env "${GPU_TUNED_SELF_DIR}/repo.env" || return 1 2>/dev/null || exit 1
-
-# embed_build_info <binary-or-so-path> — thin wrapper over gpu_tuned_embed_build_info
-# (common.sh). Section name .nccl_tuned_build_info; the "version" field carries NCCL's own
-# version, the commit and the toolkit tag. Not used on the static archive (an ELF section
-# does not belong in a .a); the tarball's BUILD_INFO file carries the same fields.
-embed_build_info() {
-    local target="$1"
-    gpu_tuned_embed_build_info "${target}" "${GPU_TUNED_VARIANT}" "nccl_tuned" \
-        "${NCCL_TUNED_DESCRIBE}, ${TOOLKIT_ID}" \
-        "${GPU_TUNED_HW_LABEL}" "https://github.com/zbrad/nccl"
-}
