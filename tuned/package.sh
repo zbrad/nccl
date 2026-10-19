@@ -3,8 +3,8 @@
 # into a tarball: the static archive PyTorch links (USE_SYSTEM_NCCL=1 USE_STATIC_NCCL=1), the headers, the license,
 # BUILD_INFO and BUILD_INFO.json. It does not ship libnccl.so: a shared library of ours would need its own unique
 # SONAME next to NVIDIA's libnccl.so.2 (docs/ARCHITECTURE.md F1). This script NEVER tags, pushes or publishes:
-# tuned/release.sh does that after its gates (docs/ARCHITECTURE.md B3). Stage order:
-#   tuned/build.sh -> tuned/full_test.sh -> this -> tuned/smoke_test.sh -> (commit the release notes) -> tuned/release.sh
+# tuned/release.sh gates it and tuned/publish.sh publishes it (docs/ARCHITECTURE.md B3). Stage order:
+#   tuned/build.sh -> tuned/full_test.sh -> this -> tuned/smoke_test.sh -> (commit the release notes) -> tuned/release.sh -> tuned/publish.sh
 #
 # Names follow tuned-common's native scheme. The date label is allocated ONCE, by tuned/build.sh (it is compiled into the
 # library's version string, "NCCL version 2.32.3-gb10-cu134.20261018.0"), recorded in <build root>/release-label,
