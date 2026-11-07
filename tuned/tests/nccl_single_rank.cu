@@ -5,7 +5,8 @@
 // or a PreMulSum kernel), so every collective is the identity (or a scale, for PreMulSum).
 //
 // What this proves: the library matches its header; a communicator initialises on the GPU this build targets
-// (sm_121a); every data type x reduction x size is accepted and returns the right bytes through that path;
+// (its one arch: sm_121a for gb10, sm_89 for rtx40); every data type x reduction x size NCCL supports there is
+// accepted and returns the right bytes through that path, and the ones it refuses are refused;
 // the PreMulSum kernel runs; the argument checks behave. What it does NOT prove: any multi-rank algorithm or
 // transport (ring/tree/NVLS, shared memory, network) and the multi-rank device kernels, including the FP8
 // multicast (LDMC) kernels whose build gate this fork patches (NVIDIA/nccl#2420). The patch is checked at build
@@ -16,6 +17,10 @@
 // __CUDA_FP8_TYPES_EXIST__ guard that is not defined when enqueue.cc is compiled. NVIDIA's own
 // libnccl2 2.31.2+cuda13.3 package behaves the same (measured 2026-10-18 with this test), so the test expects
 // the rejection and fails if a future NCCL starts accepting it, so that the expectation gets reviewed.
+//
+// Below sm_90 (rtx40 is sm_89) EVERY FP8 reduction is REJECTED with ncclInvalidArgument, by design:
+// src/enqueue/enqueue.cc refuses FP8 for any reducing collective when comm->minCompCap < 90 ("FP8 reduction
+// support begins with sm90 capable devices"). The test expects that rejection on such devices, the same way.
 //
 // Usage: nccl_single_rank   (exit 0 and "PASSED <n> checks" on success)
 #include <cuda_runtime.h>
@@ -114,11 +119,13 @@ int main() {
         stage(in);
         char what[96]; std::snprintf(what, sizeof what, "AllReduce %s %s n=%zu", d.name, o.name, n);
         bool fp8 = d.size == 1 && d.name[0] == 'f';
-        if (fp8 && o.op == ncclAvg) {  // expected rejection, see the header comment
+        bool pre_sm90 = prop.major < 9;
+        if (fp8 && (o.op == ncclAvg || pre_sm90)) {  // expected rejection, see the header comment
           ncclResult_t r = ncclAllReduce(dev_in, dev_out, n, d.t, o.op, g_comm, g_stream);
           ++g_checks;
           if (r != ncclInvalidArgument) {
-            char buf[160]; std::snprintf(buf, sizeof buf, "expected ncclInvalidArgument for FP8 average, got %s: review the expectation", ncclGetErrorString(r));
+            char buf[160]; std::snprintf(buf, sizeof buf, "expected ncclInvalidArgument for FP8 %s%s, got %s: review the expectation",
+                                         o.name, pre_sm90 ? " below sm_90" : "", ncclGetErrorString(r));
             fail(what, buf);
           }
           continue;
