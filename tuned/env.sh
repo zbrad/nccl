@@ -14,7 +14,7 @@
 
 GPU_TUNED_ARG_VARIANT="${1:-}"
 if [[ -z "${GPU_TUNED_ARG_VARIANT}" ]]; then
-    echo "ERROR: env.sh requires a variant argument (gb10; rtx40/rtx50 not yet added)" >&2
+    echo "ERROR: env.sh requires a variant argument (gb10, rtx40 or rtx50)" >&2
     return 1 2>/dev/null || exit 1
 fi
 
