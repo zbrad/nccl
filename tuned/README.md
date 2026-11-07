@@ -5,7 +5,7 @@ Builds NCCL for one GPU variant and one CUDA toolkit, compiling device code for 
 The shared library and the static archive are both checked for that one architecture. The tuned builds of zbrad/pytorch and zbrad/llama.cpp
 pin one of these releases as their NCCL and do not use the system `libnccl2` (the raft-dask Python wheel is the exception:
 it links the pip `nvidia-nccl-cu13` wheel). The layout and rules are
-`docs/ARCHITECTURE.md` in [zbrad/tuned-common](https://github.com/zbrad/tuned-common). Only gb10 is built here today.
+`docs/ARCHITECTURE.md` in [zbrad/tuned-common](https://github.com/zbrad/tuned-common). Built here for gb10, rtx40 and rtx50.
 
 ## One branch per toolkit
 

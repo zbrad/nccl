@@ -100,6 +100,16 @@ if [[ ! -f "${NOTES_FILE}" ]]; then
     mkdir -p "$(dirname "${NOTES_FILE}")"
     STATIC_CHECKS="$(sed -n 's/^  ok:   static: PASSED \([0-9]*\) checks$/\1/p' "${TEST_LOG}" | head -1)"
     SHARED_CHECKS="$(sed -n 's/^  ok:   shared: PASSED \([0-9]*\) checks$/\1/p' "${TEST_LOG}" | head -1)"
+    # Below sm_90 NCCL refuses every FP8 reduction (src/enqueue/enqueue.cc, comm->minCompCap < 90); the test asserts it.
+    FP8_NOTE=""
+    if (( ${GPU_TUNED_CUDA_ARCH//[a-z]/} < 90 )); then
+        FP8_NOTE="
+**No FP8 reductions on this GPU.** NCCL refuses every FP8 (e4m3, e5m2) reducing collective on devices below sm_90
+(\`src/enqueue/enqueue.cc\`: \"FP8 reduction support begins with sm90 capable devices\"), so on sm_${GPU_TUNED_CUDA_ARCH} FP8 AllReduce
+returns an invalid-argument error for every op; the test asserts that refusal. That check exempts AllGather,
+Broadcast, AlltoAll, Scatter and Gather (read from the source; FP8 is not exercised for those collectives here).
+"
+    fi
     cat > "${NOTES_FILE}" <<NOTES
 **DRAFT — not yet published.** Review, correct and remove this line, then commit the file.
 
@@ -121,10 +131,10 @@ suffix already names the toolkit. The numeric version code and the library file 
 - Fork commit: \`${BUILT_COMMIT}\` (\`${SOURCE_DESC}\`).
 
 ## Tested
-tuned/tests/nccl_single_rank.cu on one GB10 GPU: ${STATIC_CHECKS:-?} checks against the static archive and ${SHARED_CHECKS:-?} against the shared build,
+tuned/tests/nccl_single_rank.cu on one ${GPU_TUNED_HW_LABEL} GPU: ${STATIC_CHECKS:-?} checks against the static archive and ${SHARED_CHECKS:-?} against the shared build,
 all passed. **Single rank only:** no multi-rank algorithm or transport (NVLink, network, shared memory) was exercised, and neither
 were the multi-rank device kernels. FP8 average is rejected with an invalid-argument error, as in NVIDIA's own 2.31.2 package.
-
+${FP8_NOTE}
 ## Files
 \`nccl-tuned-…tar.gz\` with \`lib/libnccl_static.a\`, \`include/\`, \`LICENSE.txt\`, \`BUILD_INFO\`, \`BUILD_INFO.json\`; a \`.sha256\` sidecar; the test and smoke logs.
 NOTES
