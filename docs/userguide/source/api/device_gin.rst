@@ -8,6 +8,14 @@ GIN
 
 **Device functions.** The following are callable from device (GPU) code only. GIN is supported since NCCL 2.28.7.
 
+Types and limits
+----------------
+
+.. cpp:type:: ncclGinRequest_t
+
+   Opaque request storage initialized by a GIN operation (e.g., :cpp:func:`ncclGin::flushAsync`) and
+   consumed by :cpp:func:`ncclGin::wait`.
+
 ncclGin
 -------
 
@@ -69,6 +77,8 @@ ncclGin
       type :c:enumerator:`NCCL_GIN_CONNECTION_RAIL <ncclGinConnectionType_t.NCCL_GIN_CONNECTION_RAIL>`, *peer* must be within the same rail team as the local rank.
       *bufType* specifies the physical memory composition of the source and destination buffers (see
       :ref:`devapi_segment_types`); it defaults to ``ncclGin_SegmentDevice``.
+      *optFlags* is a bitwise OR of optional flags to the backend (see :ref:`gin_opt_flags`); it defaults to
+      ``ncclGinOptFlagsDefault``.
 
    .. cpp:function:: void flush(Coop coop, cuda::memory_order ord = cuda::memory_order_acquire)
 
@@ -277,6 +287,10 @@ ncclGinBarrierSession
       The fence values are bit flags and compose via bitwise OR. To request both ``Put`` and ``Get`` semantics, pass
       ``ncclGinFenceLevel::Put | ncclGinFenceLevel::Get``. ``ncclGinFenceLevel::Relaxed`` is preserved as a deprecated alias
       for ``None`` for source-level backward compatibility; new code should use ``None``.
+
+.. c:type:: ncclGinBarrierHandle_t
+
+   Opaque handle that identifies a set of GIN barriers. It is valid until the device communicator is destroyed.
 
 ncclBarrierSession
 ------------------
