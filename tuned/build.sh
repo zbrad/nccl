@@ -121,9 +121,11 @@ awk -F'\t' -v wall="${WALL}" -v total="${TOTAL}" '
     END { printf "Timing: %d units timed (of %d expected), wall %ds, summed unit time %.0fs, %d failed\n", n, total, wall, cpu, bad }
 ' "${NCCL_TUNED_TIMING_FILE}"
 echo "Slowest units:"
-sort -t$'\t' -k1,1 -rn "${NCCL_TUNED_TIMING_FILE}" | head -10 | awk -F'\t' '{ printf "  %7.1fs  %-10s %s\n", $1, $2, $3 }'
+# awk takes the first 10 itself and reads to the end: `| head` would close the pipe early, and under pipefail
+# and the ERR trap the SIGPIPE (exit 141) it sends sort fails the build after a successful compile.
+sort -t$'\t' -k1,1 -rn "${NCCL_TUNED_TIMING_FILE}" | awk -F'\t' 'NR <= 10 { printf "  %7.1fs  %-10s %s\n", $1, $2, $3 }'
 if [[ "${NVCC_CMD}" == ccache* ]]; then
-    echo "ccache: $(ccache -s | grep -E 'Hits:|Misses:' | head -2 | tr -s ' ' | tr '\n' ' ')"
+    echo "ccache: $(ccache -s | grep -m2 -E 'Hits:|Misses:' | tr -s ' ' | tr '\n' ' ')"
 fi
 
 SHARED="$(find "${BUILD_DIR}/lib" -maxdepth 1 -name 'libnccl.so.*.*.*' -not -type l | head -1)"
