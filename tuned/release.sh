@@ -7,7 +7,7 @@
 # pass writes a ready-marker (gpu_tuned_release_ready) that tuned/publish.sh publishes from. A failing run removes any
 # old marker first, so it cannot leave one behind. docs/ARCHITECTURE.md (tuned-common) lists the gates (I1, I5).
 #
-# The release is named by the date label package.sh allocated (v0.<YYYYMMDD>.<seq>-<variant>-<cuda>), read from package-info.txt
+# The release is named by the date label package.sh allocated (v<NCCL version>-<YYYYMMDD>.<seq>-<variant>-<cuda>), read from package-info.txt
 # and never recomputed here: the notes commit moves HEAD and its date. Toolkit branches: a cu133 release is made from
 # tuned-builds-cu133 and a cu134 one from tuned-builds-cu134 (each is based on the NCCL release NVIDIA ships for that CUDA).
 #

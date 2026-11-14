@@ -56,15 +56,25 @@ ok() { echo "  ok:   $*"; }
             fi
             # the version string: <variant>-<toolkit>.<label> derived from the release tag must be what the packaged header and the
             # running library both say
+            # (tags: v0.<date>.<seq>-<variant>-<cuda>, or v<NCCL version>-<date>.<seq>-<variant>-<cuda> from tuned-common 66d7a18 on)
+            TAG_VER=""
             if [[ "${RELEASE_TAG}" =~ ^v0\.([0-9]{8})\.([0-9]+)-([a-z][a-z0-9]*)-(cu[0-9]+)$ ]]; then
                 WANT_SUFFIX="-${BASH_REMATCH[3]}-${BASH_REMATCH[4]}.${BASH_REMATCH[1]}.${BASH_REMATCH[2]}"
+            elif [[ "${RELEASE_TAG}" =~ ^v([0-9]+(\.[0-9]+){0,3})-([0-9]{8})\.([0-9]+)-([a-z][a-z0-9]*)-(cu[0-9]+)$ ]]; then
+                TAG_VER="${BASH_REMATCH[1]}"
+                WANT_SUFFIX="-${BASH_REMATCH[5]}-${BASH_REMATCH[6]}.${BASH_REMATCH[3]}.${BASH_REMATCH[4]}"
+            else
+                WANT_SUFFIX=""; fail "release tag ${RELEASE_TAG} is neither v0.<date>.<seq>-<variant>-<cuda> nor v<version>-<date>.<seq>-<variant>-<cuda>"
+            fi
+            if [[ -n "${WANT_SUFFIX}" ]]; then
                 grep -q "^#define NCCL_SUFFIX \"${WANT_SUFFIX}\"" "${ROOT}/include/nccl.h" \
                     && ok "the packaged nccl.h defines NCCL_SUFFIX \"${WANT_SUFFIX}\" (from the tag)" || fail "the packaged nccl.h does not define NCCL_SUFFIX \"${WANT_SUFFIX}\""
-            else
-                WANT_SUFFIX=""; fail "release tag ${RELEASE_TAG} is not v0.<date>.<seq>-<variant>-<cuda>"
             fi
             HDR_VER="$(awk '$2=="NCCL_MAJOR"{M=$3} $2=="NCCL_MINOR"{N=$3} $2=="NCCL_PATCH"{P=$3} END{printf "%s.%s.%s", M, N, P}' "${ROOT}/include/nccl.h")"
             [[ "${HDR_VER}" == "$(info nccl_version | sed 's/[^0-9.].*//')" ]] && ok "the packaged header says NCCL ${HDR_VER}" || fail "the packaged header says ${HDR_VER}, package-info says $(info nccl_version)"
+            if [[ -n "${TAG_VER}" ]]; then
+                [[ "${TAG_VER}" == "${HDR_VER}" ]] && ok "the release tag's version ${TAG_VER} is the packaged header's" || fail "the release tag says NCCL ${TAG_VER}, the packaged header says ${HDR_VER}"
+            fi
             export PATH="${CUDA_HOME}/bin:${PATH}"
             gpu_tuned_verify_arch "${ROOT}/lib/libnccl_static.a" "${GPU_TUNED_CUDA_ARCH}" >/dev/null 2>&1 \
                 && ok "the extracted archive is single-arch sm_${GPU_TUNED_CUDA_ARCH}" || fail "the extracted archive is not single-arch sm_${GPU_TUNED_CUDA_ARCH}"

@@ -55,7 +55,9 @@ rm -f "${DIST_DIR}/package-info.txt"
 grep -q "^#define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\"" "${BUILD_DIR}/include/nccl.h" || {
     echo "ERROR: ${BUILD_DIR}/include/nccl.h does not define NCCL_SUFFIX \"${NCCL_TUNED_SUFFIX}\": stale build. Rebuild." >&2; exit 1; }
 LABEL="${NCCL_TUNED_LABEL}"
-RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${TOOLKIT_ID}" "${LABEL}")" || exit 1
+# The tag leads with NCCL's version (tuned-common 66d7a18): v<X.Y.Z>-<date>.<seq>-<variant>-<cuda>. A non-empty
+# NCCL_SUFFIX in makefiles/version.mk makes the version non-numeric, and gpu_tuned_native_tag refuses it.
+RELEASE_TAG="$(gpu_tuned_native_tag "${GPU_TUNED_VARIANT}" "${TOOLKIT_ID}" "${LABEL}" "${NCCL_TUNED_VERSION}")" || exit 1
 NAME="nccl-tuned-${NCCL_TUNED_VERSION}-${GPU_TUNED_VARIANT}-${TOOLKIT_ID}-${LABEL}"
 
 mkdir -p "${DIST_DIR}"
