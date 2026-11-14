@@ -40,9 +40,11 @@ Unlike the other tuned repos the build tree is `build/<toolkit>/` at the repo ro
 
 ## Identity
 
-- The release tag is `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>` (for example `v0.20261018.0-gb10-cu134`), allocated by
-  `package.sh` and read from `package-info.txt` by `release.sh`. NCCL's own `v2.x.y-n` tags are matched for the version and
-  `v0.*` tags are excluded from that lookup.
+- The release tag is `v<NCCL version>-<YYYYMMDD>.<seq>-<variant>-<cuda>` (for example `v2.32.6-20261114.0-gb10-cu135`),
+  allocated by `package.sh` and read from `package-info.txt` by `release.sh`; the version comes from `makefiles/version.mk`.
+  Releases before that form are named `v0.<YYYYMMDD>.<seq>-<variant>-<cuda>` (for example `v0.20261018.0-gb10-cu134`) and
+  keep their names. NCCL's own `v2.x.y-n` tags are matched for the version, and both forms of our tags (`v0.*` and
+  `v*-cu<NNN>`) are excluded from that lookup.
 - The library's version string carries the same identity: `NCCL version <NCCL version>-<variant>-<toolkit>.<label>`, with
   upstream's `+cuda<major>.<minor>` tail removed by a one-line patch in `src/init.cc` (marker `zbrad/nccl tuned-builds:
   version line`).
