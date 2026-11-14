@@ -43,8 +43,9 @@ unset _nccl_ver_mk
 # Source identity: NVIDIA's release tag, how many commits of ours sit on it, and the hash, e.g.
 # v2.30.7-1-5-g2fe1779f (a bare upstream tag reads v2.30.7-1-0-g<hash>); -dirty when tracked
 # files differ. Only NVIDIA's v<X.Y.Z>-<N> tags count: NCCL also keeps nccl4py-* and nccl-ep-*
-# tags, and our own v0.* release tags must never be picked up.
-NCCL_TUNED_DESCRIBE="$(git -C "${REPODIR}" describe --tags --long --dirty --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' 2>/dev/null)" || {
+# tags, and our own release tags (v0.<date>... and v<X.Y.Z>-<date>.<seq>-<variant>-cu<NNN>, both
+# excluded) must never be picked up.
+NCCL_TUNED_DESCRIBE="$(git -C "${REPODIR}" describe --tags --long --dirty --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' --exclude 'v*-cu[0-9]*' 2>/dev/null)" || {
     echo "[tuned/env] ERROR: git describe found no NVIDIA release tag (v<X.Y.Z>-<N>) in ${REPODIR}. Fetch upstream's tags: git fetch upstream --tags" >&2
     return 1 2>/dev/null || exit 1
 }
@@ -88,7 +89,7 @@ export NCCL_TUNED_BUILD_ROOT NCCL_TUNED_BUILD_DIR NCCL_TUNED_WORK_DIR NCCL_TUNED
 # nccl_tuned_built_commit -- the full commit the published build in build/<cuda>/nccl was made from ("<sha>" or "<sha>-dirty"), read from
 # its .params; empty if there is no build. nccl_tuned_describe_commit <sha> -- NVIDIA's release tag, our commits on it and the hash.
 nccl_tuned_built_commit() { sed -n 's/.* commit=\([0-9a-f]\{40\}\(-dirty\)\{0,1\}\) .*/\1/p' "${NCCL_TUNED_BUILD_DIR}/.params" 2>/dev/null | head -1; }
-nccl_tuned_describe_commit() { git -C "${REPODIR}" describe --tags --long --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' "$1" 2>/dev/null; }
+nccl_tuned_describe_commit() { git -C "${REPODIR}" describe --tags --long --match 'v[0-9]*.[0-9]*.[0-9]*-[0-9]*' --exclude 'v0.*' --exclude 'v*-cu[0-9]*' "$1" 2>/dev/null; }
 # nccl_tuned_assert_build_current -- fail unless the published build is clean and was made from source that equals HEAD outside tuned/
 # (docs/ARCHITECTURE.md H6). Replaces the per-commit directory that used to make a stale build impossible to pick up by path.
 nccl_tuned_assert_build_current() {
